@@ -9,7 +9,7 @@ load_dotenv()
 
 st.set_page_config(page_title="AI Data Analyzer Pro", layout="wide")
 st.title("📊 AI Data Analyzer Pro")
-st.write("Smart data analysis with 100% accurate Python calculations!")
+st.write("Smart data analysis with AI understanding + 100% accurate Python calculations!")
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
@@ -45,8 +45,8 @@ def get_recommended_functions(col_name):
 
 with st.sidebar:
     st.header("⚙️ Settings")
-    temperature = st.slider("AI Creativity", 0.0, 1.0, 0.0)
-    show_steps = st.checkbox("Show Analysis Details", value=True)
+    temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
+    show_steps = st.checkbox("Show AI Reasoning", value=True)
     timeout_seconds = st.slider("AI Response Timeout (seconds)", 60, 1800, 600, step=60)
 
 def get_column_statistics(data, column):
@@ -70,6 +70,114 @@ def get_column_statistics(data, column):
         return stats
     except Exception as e:
         return f"Error: {str(e)}"
+
+def ai_understand_query(user_question, available_columns, timeout_seconds, temperature):
+    """Use AI to understand what the user is asking"""
+    columns_str = ", ".join(available_columns)
+    
+    prompt = f"""Analyze this user question and determine what analysis they want. Respond ONLY with valid JSON.
+
+Available columns: {columns_str}
+
+User question: {user_question}
+
+Respond with ONLY this JSON format (no other text):
+{{
+  "query_type": "one of: total_by_period, best_worst_by_category, filter_and_sum, or custom_grouping",
+  "period_column": "column name for time period or null",
+  "category_column": "column name for category or null",
+  "value_column": "column name for values to aggregate",
+  "filter_column": "column to filter by or null",
+  "filter_value": "value to filter or null",
+  "agg_function": "sum, max, min, or average",
+  "reasoning": "brief explanation of what the user is asking"
+}}"""
+    
+    try:
+        response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
+        
+        if response.status_code == 200:
+            result = response.json()
+            ai_response = result.get("response", "").strip()
+            
+            try:
+                query_params = json.loads(ai_response)
+                return query_params, None
+            except:
+                return None, "Could not parse AI response as JSON"
+        else:
+            return None, f"AI Error: {response.status_code}"
+    except requests.exceptions.Timeout:
+        return None, f"AI Timeout after {timeout_seconds}s"
+    except requests.exceptions.ConnectionError:
+        return None, "Cannot connect to Ollama. Run: ollama serve"
+    except Exception as e:
+        return None, f"Error: {str(e)}"
+
+def execute_query(data, query_params):
+    """Execute the query using Python"""
+    try:
+        query_type = query_params.get("query_type", "").lower()
+        
+        if query_type == "total_by_period":
+            period_col = query_params.get("period_column")
+            value_col = query_params.get("value_column")
+            
+            if not period_col or not value_col or period_col not in data.columns or value_col not in data.columns:
+                return None, "Invalid period or value column"
+            
+            result = data.groupby(period_col)[value_col].sum().reset_index()
+            result.columns = [period_col, f"Total {value_col}"]
+            return result, None
+        
+        elif query_type == "best_worst_by_category":
+            category_col = query_params.get("category_column")
+            value_col = query_params.get("value_column")
+            agg_func = query_params.get("agg_function", "max")
+            
+            if not category_col or not value_col or category_col not in data.columns or value_col not in data.columns:
+                return None, "Invalid category or value column"
+            
+            if agg_func == "max":
+                result = data.groupby(category_col)[value_col].max().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+            elif agg_func == "min":
+                result = data.groupby(category_col)[value_col].min().reset_index()
+                result = result.sort_values(value_col, ascending=True)
+            elif agg_func == "average":
+                result = data.groupby(category_col)[value_col].mean().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+            else:
+                result = data.groupby(category_col)[value_col].sum().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+            
+            return result, None
+        
+        elif query_type == "filter_and_sum":
+            filter_col = query_params.get("filter_column")
+            filter_val = query_params.get("filter_value")
+            value_col = query_params.get("value_column")
+            
+            if not filter_col or not filter_val or not value_col:
+                return None, "Missing filter parameters"
+            
+            if filter_col not in data.columns or value_col not in data.columns:
+                return None, "Invalid column names"
+            
+            filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
+            result = filtered[[filter_col, value_col]].copy()
+            total = filtered[value_col].sum()
+            
+            return result, total
+        
+        elif query_type == "custom_grouping":
+            # This would need multiple group columns - return None for now
+            return None, "Custom grouping needs manual selection"
+        
+        return None, "Unknown query type"
+    
+    except Exception as e:
+        return None, f"Execution error: {str(e)}"
 
 uploaded_file = st.file_uploader("Choose a file (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
 
@@ -200,8 +308,8 @@ if uploaded_file:
         
         st.divider()
         
-        st.subheader("🤖 Smart Query Builder")
-        st.info("Manually select what to analyze. Python calculates exact results with 100% accuracy.")
+        st.subheader("🤖 AI-Powered Natural Language Query")
+        st.info("Ask questions in natural language. AI understands → Python calculates → Exact results!")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -213,76 +321,46 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        st.subheader("📊 Build Your Query:")
+        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What product had the best KPI_% in Brazil?", height=100)
         
-        query_type = st.radio("What do you want to find?", ["Total by Year/Period", "Best/Worst Value by Category", "Filter & Sum", "Custom Grouping"])
-        
-        if query_type == "Total by Year/Period":
-            period_col = st.selectbox("Select time period column:", [col for col in data.columns if any(x in col.lower() for x in ['year', 'quarter', 'month', 'date'])])
-            value_col = st.selectbox("Select value to sum:", data.select_dtypes(include=['number']).columns)
+        if user_question:
+            st.write("🤖 Processing your question...")
             
-            if st.button("Calculate Totals"):
-                result = data.groupby(period_col)[value_col].sum().reset_index()
-                result.columns = [period_col, f"Total {value_col}"]
-                st.success("✅ Results:")
-                st.dataframe(result, use_container_width=True)
-                st.code(result.to_csv(index=False), language="csv")
-        
-        elif query_type == "Best/Worst Value by Category":
-            category_col = st.selectbox("Select category column:", [col for col in data.columns if col in DIMENSION_COLUMNS])
-            value_col = st.selectbox("Select value to analyze:", data.select_dtypes(include=['number']).columns)
-            agg_func = st.radio("Find:", ["Maximum (Best)", "Minimum (Worst)", "Average"])
+            # Step 1: AI understands the question
+            with st.spinner("🧠 AI analyzing question..."):
+                query_params, ai_error = ai_understand_query(user_question, data.columns.tolist(), timeout_seconds, temperature)
             
-            if st.button("Calculate"):
-                if agg_func == "Maximum (Best)":
-                    result = data.groupby(category_col)[value_col].max().reset_index()
-                    result = result.sort_values(value_col, ascending=False)
-                    title = f"Top {category_col} by {value_col}"
-                elif agg_func == "Minimum (Worst)":
-                    result = data.groupby(category_col)[value_col].min().reset_index()
-                    result = result.sort_values(value_col, ascending=True)
-                    title = f"Bottom {category_col} by {value_col}"
-                else:
-                    result = data.groupby(category_col)[value_col].mean().reset_index()
-                    result = result.sort_values(value_col, ascending=False)
-                    title = f"Average {value_col} by {category_col}"
+            if ai_error:
+                st.error(f"❌ AI Error: {ai_error}")
+            elif query_params:
+                # Show what AI understood
+                if show_steps:
+                    with st.expander("🔍 AI Understanding"):
+                        st.write(f"**Your Question:** {user_question}")
+                        st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
+                        st.write(f"**Query Type:** {query_params.get('query_type')}")
+                        st.write(f"**Columns to Use:**")
+                        st.write(f"  - Period: {query_params.get('period_column')}")
+                        st.write(f"  - Category: {query_params.get('category_column')}")
+                        st.write(f"  - Value: {query_params.get('value_column')}")
+                        st.write(f"  - Filter: {query_params.get('filter_column')} = {query_params.get('filter_value')}")
+                        st.write(f"  - Function: {query_params.get('agg_function')}")
                 
-                st.success(f"✅ {title}:")
-                st.dataframe(result, use_container_width=True)
-                st.code(result.to_csv(index=False), language="csv")
-        
-        elif query_type == "Filter & Sum":
-            filter_col = st.selectbox("Filter by:", data.columns)
-            filter_val = st.selectbox("Filter value:", data[filter_col].unique())
-            sum_col = st.selectbox("Sum column:", data.select_dtypes(include=['number']).columns)
-            
-            if st.button("Filter & Calculate"):
-                filtered = data[data[filter_col] == filter_val]
-                total = filtered[sum_col].sum()
-                st.success(f"✅ Total {sum_col} where {filter_col} = {filter_val}:")
-                st.metric(f"{sum_col}", f"{total:,.2f}")
-                st.dataframe(filtered, use_container_width=True)
-        
-        elif query_type == "Custom Grouping":
-            group_cols = st.multiselect("Group by:", data.columns)
-            agg_col = st.selectbox("Aggregate:", data.select_dtypes(include=['number']).columns)
-            agg_type = st.selectbox("Function:", ["Sum", "Max", "Min", "Average", "Count"])
-            
-            if group_cols and st.button("Calculate"):
-                if agg_type == "Sum":
-                    result = data.groupby(group_cols)[agg_col].sum().reset_index()
-                elif agg_type == "Max":
-                    result = data.groupby(group_cols)[agg_col].max().reset_index()
-                elif agg_type == "Min":
-                    result = data.groupby(group_cols)[agg_col].min().reset_index()
-                elif agg_type == "Average":
-                    result = data.groupby(group_cols)[agg_col].mean().reset_index()
-                else:
-                    result = data.groupby(group_cols)[agg_col].count().reset_index()
+                # Step 2: Python executes
+                with st.spinner("📊 Calculating results..."):
+                    result, error = execute_query(data, query_params)
                 
-                st.success("✅ Results:")
-                st.dataframe(result, use_container_width=True)
-                st.code(result.to_csv(index=False), language="csv")
+                if error and result is None:
+                    st.error(f"❌ Error: {error}")
+                else:
+                    st.success("✅ Results Calculated!")
+                    
+                    if isinstance(result, (int, float)):
+                        # Filter & Sum result
+                        st.metric("Total", f"{result:,.2f}")
+                    elif isinstance(result, pd.DataFrame):
+                        st.dataframe(result, use_container_width=True)
+                        st.code(result.to_csv(index=False), language="csv")
         
         import os as os_module
         if os_module.path.exists(temp_path):
