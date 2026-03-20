@@ -181,10 +181,24 @@ def execute_query(data, query_params):
             if category_col not in data.columns or value_col not in data.columns:
                 return None, f"Column not found. Category: {category_col}, Value: {value_col}"
             
-            # Group by category and take max/mean
-            result = data.groupby(category_col)[value_col].max().reset_index()
-            result = result.sort_values(value_col, ascending=False)
-            result.columns = [category_col, f"Max {value_col}"]
+            # Determine aggregation function based on column type
+            value_col_type = get_column_type(value_col)
+            
+            if value_col_type == 'percentage':
+                # For percentages, use mean (average)
+                result = data.groupby(category_col)[value_col].mean().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+                result.columns = [category_col, f"Average {value_col}"]
+            elif value_col_type == 'financial':
+                # For financial, use sum
+                result = data.groupby(category_col)[value_col].sum().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+                result.columns = [category_col, f"Total {value_col}"]
+            else:
+                # For others, use max
+                result = data.groupby(category_col)[value_col].max().reset_index()
+                result = result.sort_values(value_col, ascending=False)
+                result.columns = [category_col, f"Max {value_col}"]
             
             return result, None
         
@@ -258,7 +272,7 @@ if uploaded_file:
                 st.info("No numeric columns found")
         
         with tab3:
-            st.subheader("🔍 Column Details")
+            st.subheader("��� Column Details")
             col_info = pd.DataFrame({
                 'Column Name': data.columns,
                 'Data Type': [str(dt) for dt in data.dtypes.values],
