@@ -79,17 +79,28 @@ def ai_understand_query(user_question, available_columns, timeout_seconds, tempe
 
 Available columns: {columns_str}
 
+Dimension columns (for grouping/categorizing): Geo, Country, Sales_Rep, Customer, Category, Product
+Metric columns (for values): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
+Time columns: Year, Quarter, Month, Date
+
 Question: {user_question}
 
-IMPORTANT: If the question asks about "highest", "best", "worst", "lowest", "top", "bottom", "leader", or "champion" for ANY category/dimension (like Geo, Country, Product, etc), use best_worst_by_category query type.
+RULES:
+1. If asking about "highest", "best", "top", "leader" -> use best_worst_by_category with ascending=False
+2. If asking about "lowest", "worst", "bottom" -> use best_worst_by_category with ascending=True
+3. If asking "WHERE" something equals a value -> use filter_and_sum (filter_value is the specific value mentioned)
+4. If asking about "yearly", "by year", "per year", "year over year" -> use total_by_period with period_column=Year
+5. If asking about trends over time -> use total_by_period
+6. VALUE_COLUMN must be from metric columns. CATEGORY_COLUMN must be from dimension columns.
+7. Extract exact values from the question for FILTER_VALUE (e.g., "North America", "Brazil", "Product A")
 
 Answer with ONLY these 7 lines, nothing else:
 QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
 PERIOD_COLUMN: [column name or NONE]
 CATEGORY_COLUMN: [column name or NONE]
-VALUE_COLUMN: [column name]
+VALUE_COLUMN: [column name from metric columns or NONE]
 FILTER_COLUMN: [column name or NONE]
-FILTER_VALUE: [value or NONE]
+FILTER_VALUE: [exact value from question or NONE]
 REASONING: [one sentence explaining the question]"""
     
     try:
@@ -213,7 +224,7 @@ def execute_query(data, query_params):
             value_col = query_params.get("value_column")
             
             if not filter_col or not filter_val or not value_col:
-                return None, "Missing filter parameters"
+                return None, f"Missing filter parameters. Filter Column: {filter_col}, Filter Value: {filter_val}, Value Column: {value_col}"
             
             if filter_col not in data.columns or value_col not in data.columns:
                 return None, "Invalid column names"
