@@ -375,10 +375,12 @@ if uploaded_file:
                         st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
                         st.write(f"**Query Type:** {query_params.get('query_type')}")
                         st.write(f"**Columns to Use:**")
-                        st.write(f"  - Period: {query_params.get('period_column')}")
-                        st.write(f"  - Category: {query_params.get('category_column')}")
-                        st.write(f"  - Value: {query_params.get('value_column')}")
-                        st.write(f"  - Filter: {query_params.get('filter_column')} = {query_params.get('filter_value')}")
+                        st.write(f"  - Period Column: '{query_params.get('period_column')}'")
+                        st.write(f"  - Category Column: '{query_params.get('category_column')}'")
+                        st.write(f"  - Value Column: '{query_params.get('value_column')}'")
+                        st.write(f"  - Filter Column: '{query_params.get('filter_column')}'")
+                        st.write(f"  - Filter Value: '{query_params.get('filter_value')}'")
+                        st.write(f"**Available columns in dataset:** {data.columns.tolist()}")
                 
                 # Step 2: Python executes
                 with st.spinner("📊 Calculating results..."):
