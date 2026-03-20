@@ -9,7 +9,7 @@ load_dotenv()
 
 st.set_page_config(page_title="AI Data Analyzer Pro", layout="wide")
 st.title("📊 AI Data Analyzer Pro")
-st.write("Smart data analysis with AI-powered query understanding!")
+st.write("Smart data analysis with 100% accurate Python calculations!")
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
@@ -70,52 +70,6 @@ def get_column_statistics(data, column):
         return stats
     except Exception as e:
         return f"Error: {str(e)}"
-
-def find_matching_columns(data, keywords):
-    """Find columns that match user keywords"""
-    matching = []
-    for col in data.columns:
-        col_lower = col.lower()
-        for keyword in keywords:
-            if keyword.lower() in col_lower:
-                matching.append(col)
-                break
-    return matching
-
-def execute_smart_query(data, user_question, keywords_data):
-    """Execute query using Python calculations"""
-    try:
-        filter_col = keywords_data.get('filter_column')
-        filter_value = keywords_data.get('filter_value')
-        group_col = keywords_data.get('group_column')
-        agg_col = keywords_data.get('agg_column')
-        agg_func = keywords_data.get('agg_function', 'sum')
-        
-        result_data = data.copy()
-        
-        # Apply filter if specified
-        if filter_col and filter_value and filter_col in data.columns:
-            result_data = result_data[result_data[filter_col].astype(str).str.contains(filter_value, case=False, na=False)]
-        
-        # Apply aggregation if specified
-        if group_col and agg_col and group_col in data.columns and agg_col in data.columns:
-            if agg_func == 'sum':
-                result = result_data.groupby(group_col)[agg_col].sum().reset_index()
-            elif agg_func == 'max':
-                result = result_data.groupby(group_col)[agg_col].max().reset_index()
-            elif agg_func == 'min':
-                result = result_data.groupby(group_col)[agg_col].min().reset_index()
-            elif agg_func == 'mean':
-                result = result_data.groupby(group_col)[agg_col].mean().reset_index()
-            else:
-                result = result_data.groupby(group_col)[agg_col].count().reset_index()
-            
-            return result, result.to_csv(index=False)
-        
-        return result_data, result_data.to_csv(index=False)
-    
-    except Exception as e:
-        return None, f"Error: {str(e)}"
 
 uploaded_file = st.file_uploader("Choose a file (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
 
@@ -246,8 +200,8 @@ if uploaded_file:
         
         st.divider()
         
-        st.subheader("🤖 AI-Powered Smart Query")
-        st.info("Ask questions in natural language. AI understands intent → Python calculates exact answers → AI explains results.")
+        st.subheader("🤖 Smart Query Builder")
+        st.info("Manually select what to analyze. Python calculates exact results with 100% accuracy.")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -259,93 +213,76 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What product has best KPI_% in Brazil?", height=100)
+        st.subheader("📊 Build Your Query:")
         
-        if user_question:
-            st.write("🤖 Processing your question...")
+        query_type = st.radio("What do you want to find?", ["Total by Year/Period", "Best/Worst Value by Category", "Filter & Sum", "Custom Grouping"])
+        
+        if query_type == "Total by Year/Period":
+            period_col = st.selectbox("Select time period column:", [col for col in data.columns if any(x in col.lower() for x in ['year', 'quarter', 'month', 'date'])])
+            value_col = st.selectbox("Select value to sum:", data.select_dtypes(include=['number']).columns)
             
-            # Step 1: Use AI to understand the question
-            understanding_prompt = f"""You are a data analyst assistant. Analyze this question and extract the intent in JSON format.
-
-Available columns: {', '.join(data.columns.tolist())}
-
-Question: {user_question}
-
-Respond ONLY with JSON (no extra text):
-{{
-  "filter_column": "column to filter by or null",
-  "filter_value": "value to filter or null",
-  "group_column": "column to group by or null",
-  "agg_column": "column to aggregate or null",
-  "agg_function": "sum/max/min/mean/count",
-  "explanation": "what the user is asking"
-}}"""
+            if st.button("Calculate Totals"):
+                result = data.groupby(period_col)[value_col].sum().reset_index()
+                result.columns = [period_col, f"Total {value_col}"]
+                st.success("✅ Results:")
+                st.dataframe(result, use_container_width=True)
+                st.code(result.to_csv(index=False), language="csv")
+        
+        elif query_type == "Best/Worst Value by Category":
+            category_col = st.selectbox("Select category column:", [col for col in data.columns if col in DIMENSION_COLUMNS])
+            value_col = st.selectbox("Select value to analyze:", data.select_dtypes(include=['number']).columns)
+            agg_func = st.radio("Find:", ["Maximum (Best)", "Minimum (Worst)", "Average"])
             
-            try:
-                response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": understanding_prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    ai_understanding = result.get("response", "").strip()
-                    
-                    # Parse JSON
-                    try:
-                        query_params = json.loads(ai_understanding)
-                    except:
-                        st.error("Could not parse AI response")
-                        query_params = {}
-                    
-                    if show_steps:
-                        with st.expander("🔍 AI Understanding"):
-                            st.write(f"**Intent:** {query_params.get('explanation', 'N/A')}")
-                            st.write(f"Filter: {query_params.get('filter_column')} = {query_params.get('filter_value')}")
-                            st.write(f"Group by: {query_params.get('group_column')}")
-                            st.write(f"Aggregate: {query_params.get('agg_function')}({query_params.get('agg_column')})")
-                    
-                    # Step 2: Execute with Python
-                    with st.spinner("Calculating results..."):
-                        result_data, result_csv = execute_smart_query(data, user_question, query_params)
-                    
-                    if result_data is not None:
-                        st.success("✅ Results Calculated!")
-                        
-                        # Show table
-                        st.subheader("📊 Results:")
-                        st.dataframe(result_data, use_container_width=True)
-                        
-                        # Step 3: Use AI to explain results
-                        explanation_prompt = f"""You are a data analyst. Explain these results to the user clearly and concisely.
-
-Question: {user_question}
-
-Results:
-{result_csv}
-
-Provide a clear, natural language explanation of what these results show. Be specific with numbers."""
-                        
-                        with st.spinner("Generating explanation..."):
-                            response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": explanation_prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
-                        
-                    if response.status_code == 200:
-                        st.markdown("---")
-                        st.subheader("📝 Results:")
-                        st.dataframe(result_data, use_container_width=True)
-                        st.markdown("---")
-                            
-                        st.write("**Raw Data (CSV):**")
-                        st.code(result_csv, language="csv")
-                    else:
-                        st.error(result_csv)
-                
+            if st.button("Calculate"):
+                if agg_func == "Maximum (Best)":
+                    result = data.groupby(category_col)[value_col].max().reset_index()
+                    result = result.sort_values(value_col, ascending=False)
+                    title = f"Top {category_col} by {value_col}"
+                elif agg_func == "Minimum (Worst)":
+                    result = data.groupby(category_col)[value_col].min().reset_index()
+                    result = result.sort_values(value_col, ascending=True)
+                    title = f"Bottom {category_col} by {value_col}"
                 else:
-                    st.error(f"Error: {response.status_code}")
+                    result = data.groupby(category_col)[value_col].mean().reset_index()
+                    result = result.sort_values(value_col, ascending=False)
+                    title = f"Average {value_col} by {category_col}"
+                
+                st.success(f"✅ {title}:")
+                st.dataframe(result, use_container_width=True)
+                st.code(result.to_csv(index=False), language="csv")
+        
+        elif query_type == "Filter & Sum":
+            filter_col = st.selectbox("Filter by:", data.columns)
+            filter_val = st.selectbox("Filter value:", data[filter_col].unique())
+            sum_col = st.selectbox("Sum column:", data.select_dtypes(include=['number']).columns)
             
-            except requests.exceptions.Timeout:
-                st.error(f"Timeout after {timeout_seconds}s")
-            except requests.exceptions.ConnectionError:
-                st.error("Cannot connect to Ollama. Run: ollama serve")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
+            if st.button("Filter & Calculate"):
+                filtered = data[data[filter_col] == filter_val]
+                total = filtered[sum_col].sum()
+                st.success(f"✅ Total {sum_col} where {filter_col} = {filter_val}:")
+                st.metric(f"{sum_col}", f"{total:,.2f}")
+                st.dataframe(filtered, use_container_width=True)
+        
+        elif query_type == "Custom Grouping":
+            group_cols = st.multiselect("Group by:", data.columns)
+            agg_col = st.selectbox("Aggregate:", data.select_dtypes(include=['number']).columns)
+            agg_type = st.selectbox("Function:", ["Sum", "Max", "Min", "Average", "Count"])
+            
+            if group_cols and st.button("Calculate"):
+                if agg_type == "Sum":
+                    result = data.groupby(group_cols)[agg_col].sum().reset_index()
+                elif agg_type == "Max":
+                    result = data.groupby(group_cols)[agg_col].max().reset_index()
+                elif agg_type == "Min":
+                    result = data.groupby(group_cols)[agg_col].min().reset_index()
+                elif agg_type == "Average":
+                    result = data.groupby(group_cols)[agg_col].mean().reset_index()
+                else:
+                    result = data.groupby(group_cols)[agg_col].count().reset_index()
+                
+                st.success("✅ Results:")
+                st.dataframe(result, use_container_width=True)
+                st.code(result.to_csv(index=False), language="csv")
         
         import os as os_module
         if os_module.path.exists(temp_path):
