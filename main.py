@@ -218,7 +218,6 @@ if uploaded_file:
         if user_question:
             st.write("🤖 Analyzing...")
             
-            # Limit to first 50 rows to avoid hallucination
             dataset_csv = data.head(50).to_csv(index=False)
             
             prompt = f"""Analyze this dataset and answer the question. Use ONLY the data provided. Never make up numbers. Show exact values from the data.
@@ -226,7 +225,44 @@ if uploaded_file:
 DATASET (showing first 50 rows):
 {dataset_csv}
 
-
 QUESTION: {user_question}
 
 ANSWER: Provide exact values only from the dataset above. If not found, say "Not in dataset"."""
+            
+            try:
+                response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    ai_response = result.get("response", "No response")
+                    st.success("✅ Done!")
+                    st.markdown("---")
+                    st.markdown(ai_response)
+                    st.markdown("---")
+                else:
+                    st.error(f"Error: {response.status_code}")
+            except requests.exceptions.Timeout:
+                st.error(f"Timeout after {timeout_seconds}s")
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot connect to Ollama. Run: ollama serve")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+        
+        import os as os_module
+        if os_module.path.exists(temp_path):
+            os_module.remove(temp_path)
+    
+    except Exception as e:
+        st.error(f"Error reading file: {str(e)}")
+
+import atexit
+def cleanup():
+    import os
+    import glob
+    for temp_file in glob.glob("temp_*"):
+        try:
+            os.remove(temp_file)
+        except:
+            pass
+
+atexit.register(cleanup)
