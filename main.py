@@ -161,8 +161,11 @@ def execute_query(data, query_params):
             period_col = query_params.get("period_column")
             value_col = query_params.get("value_column")
             
-            if not period_col or not value_col or period_col not in data.columns or value_col not in data.columns:
-                return None, "Invalid period or value column"
+            if not period_col or not value_col:
+                return None, "Missing period or value column"
+            
+            if period_col not in data.columns or value_col not in data.columns:
+                return None, f"Column not found. Period: {period_col}, Value: {value_col}"
             
             result = data.groupby(period_col)[value_col].sum().reset_index()
             result.columns = [period_col, f"Total {value_col}"]
@@ -171,23 +174,17 @@ def execute_query(data, query_params):
         elif query_type == "best_worst_by_category":
             category_col = query_params.get("category_column")
             value_col = query_params.get("value_column")
-            agg_func = query_params.get("agg_function", "max")
             
-            if not category_col or not value_col or category_col not in data.columns or value_col not in data.columns:
-                return None, "Invalid category or value column"
+            if not category_col or not value_col:
+                return None, "Missing category or value column"
             
-            if agg_func == "max":
-                result = data.groupby(category_col)[value_col].max().reset_index()
-                result = result.sort_values(value_col, ascending=False)
-            elif agg_func == "min":
-                result = data.groupby(category_col)[value_col].min().reset_index()
-                result = result.sort_values(value_col, ascending=True)
-            elif agg_func == "average":
-                result = data.groupby(category_col)[value_col].mean().reset_index()
-                result = result.sort_values(value_col, ascending=False)
-            else:
-                result = data.groupby(category_col)[value_col].sum().reset_index()
-                result = result.sort_values(value_col, ascending=False)
+            if category_col not in data.columns or value_col not in data.columns:
+                return None, f"Column not found. Category: {category_col}, Value: {value_col}"
+            
+            # Group by category and take max/mean
+            result = data.groupby(category_col)[value_col].max().reset_index()
+            result = result.sort_values(value_col, ascending=False)
+            result.columns = [category_col, f"Max {value_col}"]
             
             return result, None
         
@@ -203,10 +200,11 @@ def execute_query(data, query_params):
                 return None, "Invalid column names"
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
-            result = filtered[[filter_col, value_col]].copy()
             total = filtered[value_col].sum()
             
-            return result, total
+            result_table = filtered[[filter_col, value_col]].copy()
+            
+            return (result_table, total), None
         
         else:
             return None, "Unknown query type"
@@ -391,9 +389,11 @@ if uploaded_file:
                 else:
                     st.success("✅ Results Calculated!")
                     
-                    if isinstance(result, (int, float)):
+                    if isinstance(result, tuple):
                         # Filter & Sum result
-                        st.metric("Total", f"{result:,.2f}")
+                        result_table, total = result
+                        st.metric("Total", f"{total:,.2f}")
+                        st.dataframe(result_table, use_container_width=True)
                     elif isinstance(result, pd.DataFrame):
                         st.dataframe(result, use_container_width=True)
                         st.code(result.to_csv(index=False), language="csv")
