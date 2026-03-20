@@ -326,16 +326,14 @@ Provide a clear, natural language explanation of what these results show. Be spe
                         with st.spinner("Generating explanation..."):
                             response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": explanation_prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
                         
-                        if response.status_code == 200:
-                            result = response.json()
-                            explanation = result.get("response", "").strip()
-                            st.markdown("---")
-                            st.subheader("📝 Explanation:")
-                            st.markdown(explanation)
-                            st.markdown("---")
+                    if response.status_code == 200:
+                        st.markdown("---")
+                        st.subheader("📝 Results:")
+                        st.dataframe(result_data, use_container_width=True)
+                        st.markdown("---")
                             
-                            st.write("**Raw Data (CSV):**")
-                            st.code(result_csv, language="csv")
+                        st.write("**Raw Data (CSV):**")
+                        st.code(result_csv, language="csv")
                     else:
                         st.error(result_csv)
                 
