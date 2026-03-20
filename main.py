@@ -85,14 +85,14 @@ Time columns: Year, Quarter, Month, Date
 
 Question: {user_question}
 
-RULES:
-1. If asking about "highest", "best", "top", "leader" -> use best_worst_by_category with ascending=False
-2. If asking about "lowest", "worst", "bottom" -> use best_worst_by_category with ascending=True
-3. If asking "WHERE" something equals a value -> use filter_and_sum (filter_value is the specific value mentioned)
-4. If asking about "yearly", "by year", "per year", "year over year" -> use total_by_period with period_column=Year
-5. If asking about trends over time -> use total_by_period
+RULES FOR QUERY TYPE DETECTION:
+1. If asking "by [dimension]" (like "by product", "by country", "by geo") -> best_worst_by_category with CATEGORY_COLUMN=[dimension]
+2. If asking about "highest", "best", "top", "lowest", "worst", "bottom" FOR A DIMENSION -> best_worst_by_category
+3. If asking "WHERE" something equals a value -> filter_and_sum
+4. If asking "yearly", "by year", "per year", "year over year" AND NO other dimension mentioned -> total_by_period
+5. For "average by X" -> best_worst_by_category with CATEGORY_COLUMN=X
 6. VALUE_COLUMN must be from metric columns. CATEGORY_COLUMN must be from dimension columns.
-7. Extract exact values from the question for FILTER_VALUE (e.g., "North America", "Brazil", "Product A")
+7. Extract exact values from the question for FILTER_VALUE (e.g., "North America", "Brazil")
 
 Answer with ONLY these 7 lines, nothing else:
 QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
