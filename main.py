@@ -165,7 +165,7 @@ def execute_query(data, query_params):
                 return None, "Missing period or value column"
             
             if period_col not in data.columns or value_col not in data.columns:
-                return None, f"Column not found. Period: {period_col}, Value: {value_col}"
+                return None, f"Column not found. Looking for Period: '{period_col}', Value: '{value_col}'. Available: {list(data.columns)}"
             
             result = data.groupby(period_col)[value_col].sum().reset_index()
             result.columns = [period_col, f"Total {value_col}"]
@@ -176,10 +176,13 @@ def execute_query(data, query_params):
             value_col = query_params.get("value_column")
             
             if not category_col or not value_col:
-                return None, "Missing category or value column"
+                return None, f"Missing category or value column. Category: {category_col}, Value: {value_col}"
             
-            if category_col not in data.columns or value_col not in data.columns:
-                return None, f"Column not found. Category: {category_col}, Value: {value_col}"
+            if category_col not in data.columns:
+                return None, f"Category column '{category_col}' not found. Available: {list(data.columns)}"
+            
+            if value_col not in data.columns:
+                return None, f"Value column '{value_col}' not found. Available: {list(data.columns)}"
             
             # Determine aggregation function based on column type
             value_col_type = get_column_type(value_col)
@@ -250,7 +253,7 @@ if uploaded_file:
         with tab1:
             st.subheader("Data Preview")
             rows_to_show = st.slider("Rows to display:", 5, min(100, len(data)), 10)
-            st.dataframe(data.head(rows_to_show), use_container_width=True)
+            st.dataframe(data.head(rows_to_show), width='stretch')
         
         with tab2:
             st.subheader("📈 Quick Statistics")
@@ -267,12 +270,12 @@ if uploaded_file:
             st.write("**Numeric Column Statistics:**")
             numeric_data = data.select_dtypes(include=['number'])
             if not numeric_data.empty:
-                st.dataframe(numeric_data.describe(), use_container_width=True)
+                st.dataframe(numeric_data.describe(), width='stretch')
             else:
                 st.info("No numeric columns found")
         
         with tab3:
-            st.subheader("��� Column Details")
+            st.subheader("🔍 Column Details")
             col_info = pd.DataFrame({
                 'Column Name': data.columns,
                 'Data Type': [str(dt) for dt in data.dtypes.values],
@@ -280,7 +283,7 @@ if uploaded_file:
                 'Null Count': [int(data[col].isnull().sum()) for col in data.columns],
                 'Unique Values': [f"{int(data[col].nunique()):,}" for col in data.columns]
             })
-            st.dataframe(col_info, use_container_width=True)
+            st.dataframe(col_info, width='stretch')
         
         st.divider()
         
@@ -313,7 +316,7 @@ if uploaded_file:
                 if st.button("Apply Filter & View", key="btn_filter_view"):
                     filtered = data[data[filter_col].astype(str).isin(selected_vals)].copy()
                     st.success(f"✅ Showing {len(filtered)} rows")
-                    st.dataframe(filtered, use_container_width=True)
+                    st.dataframe(filtered, width='stretch')
                     st.code(filtered.to_csv(index=False), language="csv")
         
         with calc_tab3:
@@ -340,7 +343,7 @@ if uploaded_file:
                                 try:
                                     result = data.groupby(group_cols_selected).agg(agg_config).reset_index()
                                     st.success("✅ Aggregation Complete!")
-                                    st.dataframe(result, use_container_width=True)
+                                    st.dataframe(result, width='stretch')
                                     st.code(result.to_csv(index=False), language="csv")
                                 except Exception as e:
                                     st.error(f"❌ Error: {str(e)}")
@@ -350,7 +353,7 @@ if uploaded_file:
             cols_to_display = st.multiselect("Select columns:", data.columns, default=list(data.columns[:10]), key="cols_display")
             if cols_to_display:
                 if st.button("Display Data", key="btn_display"):
-                    st.dataframe(data[cols_to_display], use_container_width=True)
+                    st.dataframe(data[cols_to_display], width='stretch')
                     st.code(data[cols_to_display].to_csv(index=False), language="csv")
         
         st.divider()
@@ -368,7 +371,7 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What product had the best KPI_% in Brazil?", height=100)
+        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100)
         
         if user_question:
             st.write("🤖 Processing your question...")
@@ -385,13 +388,15 @@ if uploaded_file:
                     with st.expander("🔍 AI Understanding"):
                         st.write(f"**Your Question:** {user_question}")
                         st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
-                        st.write(f"**Query Type:** {query_params.get('query_type')}")
-                        st.write(f"**Columns to Use:**")
-                        st.write(f"  - Period Column: '{query_params.get('period_column')}'")
-                        st.write(f"  - Category Column: '{query_params.get('category_column')}'")
-                        st.write(f"  - Value Column: '{query_params.get('value_column')}'")
-                        st.write(f"  - Filter Column: '{query_params.get('filter_column')}'")
-                        st.write(f"  - Filter Value: '{query_params.get('filter_value')}'")
+                        st.write(f"**Query Type:** `{query_params.get('query_type')}`")
+                        st.write("**Columns to Use:**")
+                        st.json({
+                            "Period Column": query_params.get('period_column'),
+                            "Category Column": query_params.get('category_column'),
+                            "Value Column": query_params.get('value_column'),
+                            "Filter Column": query_params.get('filter_column'),
+                            "Filter Value": query_params.get('filter_value')
+                        })
                         st.write(f"**Available columns in dataset:** {data.columns.tolist()}")
                 
                 # Step 2: Python executes
@@ -407,9 +412,9 @@ if uploaded_file:
                         # Filter & Sum result
                         result_table, total = result
                         st.metric("Total", f"{total:,.2f}")
-                        st.dataframe(result_table, use_container_width=True)
+                        st.dataframe(result_table, width='stretch')
                     elif isinstance(result, pd.DataFrame):
-                        st.dataframe(result, use_container_width=True)
+                        st.dataframe(result, width='stretch')
                         st.code(result.to_csv(index=False), language="csv")
         
         import os as os_module
