@@ -81,6 +81,8 @@ Available columns: {columns_str}
 
 Question: {user_question}
 
+IMPORTANT: If the question asks about "highest", "best", "worst", "lowest", "top", "bottom", "leader", or "champion" for ANY category/dimension (like Geo, Country, Product, etc), use best_worst_by_category query type.
+
 Answer with ONLY these 7 lines, nothing else:
 QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
 PERIOD_COLUMN: [column name or NONE]
@@ -112,7 +114,7 @@ REASONING: [one sentence explaining the question]"""
             for line in lines:
                 if "QUERY_TYPE:" in line:
                     val = line.split(":", 1)[1].strip().lower()
-                    if "best" in val or "worst" in val or "category" in val:
+                    if "best_worst" in val or "best" in val or "worst" in val or "category" in val:
                         query_params["query_type"] = "best_worst_by_category"
                     elif "filter" in val:
                         query_params["query_type"] = "filter_and_sum"
