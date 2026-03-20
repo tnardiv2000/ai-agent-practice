@@ -9,7 +9,7 @@ load_dotenv()
 
 st.set_page_config(page_title="AI Data Analyzer Pro", layout="wide")
 st.title("📊 AI Data Analyzer Pro")
-st.write("Smart data analysis with full transparency and accuracy!")
+st.write("Smart data analysis with AI-powered query understanding!")
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
@@ -70,6 +70,52 @@ def get_column_statistics(data, column):
         return stats
     except Exception as e:
         return f"Error: {str(e)}"
+
+def find_matching_columns(data, keywords):
+    """Find columns that match user keywords"""
+    matching = []
+    for col in data.columns:
+        col_lower = col.lower()
+        for keyword in keywords:
+            if keyword.lower() in col_lower:
+                matching.append(col)
+                break
+    return matching
+
+def execute_smart_query(data, user_question, keywords_data):
+    """Execute query using Python calculations"""
+    try:
+        filter_col = keywords_data.get('filter_column')
+        filter_value = keywords_data.get('filter_value')
+        group_col = keywords_data.get('group_column')
+        agg_col = keywords_data.get('agg_column')
+        agg_func = keywords_data.get('agg_function', 'sum')
+        
+        result_data = data.copy()
+        
+        # Apply filter if specified
+        if filter_col and filter_value and filter_col in data.columns:
+            result_data = result_data[result_data[filter_col].astype(str).str.contains(filter_value, case=False, na=False)]
+        
+        # Apply aggregation if specified
+        if group_col and agg_col and group_col in data.columns and agg_col in data.columns:
+            if agg_func == 'sum':
+                result = result_data.groupby(group_col)[agg_col].sum().reset_index()
+            elif agg_func == 'max':
+                result = result_data.groupby(group_col)[agg_col].max().reset_index()
+            elif agg_func == 'min':
+                result = result_data.groupby(group_col)[agg_col].min().reset_index()
+            elif agg_func == 'mean':
+                result = result_data.groupby(group_col)[agg_col].mean().reset_index()
+            else:
+                result = result_data.groupby(group_col)[agg_col].count().reset_index()
+            
+            return result, result.to_csv(index=False)
+        
+        return result_data, result_data.to_csv(index=False)
+    
+    except Exception as e:
+        return None, f"Error: {str(e)}"
 
 uploaded_file = st.file_uploader("Choose a file (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
 
@@ -200,8 +246,8 @@ if uploaded_file:
         
         st.divider()
         
-        st.subheader("🤖 AI-Powered Analysis")
-        st.info("AI analyzes your COMPLETE dataset - all rows, all columns. No hallucination.")
+        st.subheader("🤖 AI-Powered Smart Query")
+        st.info("Ask questions in natural language. AI understands intent → Python calculates exact answers → AI explains results.")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -211,36 +257,91 @@ if uploaded_file:
         with col3:
             st.metric("Status", "✅ Ready")
         
-        st.write(f"**Columns:** {', '.join(data.columns.tolist())}")
+        st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        user_question = st.text_area("Ask about your data:", placeholder="Example: What product has best KPI_% in Brazil?", height=100)
+        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What product has best KPI_% in Brazil?", height=100)
         
         if user_question:
-            st.write("🤖 Analyzing...")
+            st.write("🤖 Processing your question...")
             
-            dataset_csv = data.head(50).to_csv(index=False)
-            
-            prompt = f"""Analyze this dataset and answer the question. Use ONLY the data provided. Never make up numbers. Show exact values from the data.
+            # Step 1: Use AI to understand the question
+            understanding_prompt = f"""You are a data analyst assistant. Analyze this question and extract the intent in JSON format.
 
-DATASET (showing first 50 rows):
-{dataset_csv}
+Available columns: {', '.join(data.columns.tolist())}
 
-QUESTION: {user_question}
+Question: {user_question}
 
-ANSWER: Provide exact values only from the dataset above. If not found, say "Not in dataset"."""
+Respond ONLY with JSON (no extra text):
+{{
+  "filter_column": "column to filter by or null",
+  "filter_value": "value to filter or null",
+  "group_column": "column to group by or null",
+  "agg_column": "column to aggregate or null",
+  "agg_function": "sum/max/min/mean/count",
+  "explanation": "what the user is asking"
+}}"""
             
             try:
-                response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
+                response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": understanding_prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
                 
                 if response.status_code == 200:
                     result = response.json()
-                    ai_response = result.get("response", "No response")
-                    st.success("✅ Done!")
-                    st.markdown("---")
-                    st.markdown(ai_response)
-                    st.markdown("---")
+                    ai_understanding = result.get("response", "").strip()
+                    
+                    # Parse JSON
+                    try:
+                        query_params = json.loads(ai_understanding)
+                    except:
+                        st.error("Could not parse AI response")
+                        query_params = {}
+                    
+                    if show_steps:
+                        with st.expander("🔍 AI Understanding"):
+                            st.write(f"**Intent:** {query_params.get('explanation', 'N/A')}")
+                            st.write(f"Filter: {query_params.get('filter_column')} = {query_params.get('filter_value')}")
+                            st.write(f"Group by: {query_params.get('group_column')}")
+                            st.write(f"Aggregate: {query_params.get('agg_function')}({query_params.get('agg_column')})")
+                    
+                    # Step 2: Execute with Python
+                    with st.spinner("Calculating results..."):
+                        result_data, result_csv = execute_smart_query(data, user_question, query_params)
+                    
+                    if result_data is not None:
+                        st.success("✅ Results Calculated!")
+                        
+                        # Show table
+                        st.subheader("📊 Results:")
+                        st.dataframe(result_data, use_container_width=True)
+                        
+                        # Step 3: Use AI to explain results
+                        explanation_prompt = f"""You are a data analyst. Explain these results to the user clearly and concisely.
+
+Question: {user_question}
+
+Results:
+{result_csv}
+
+Provide a clear, natural language explanation of what these results show. Be specific with numbers."""
+                        
+                        with st.spinner("Generating explanation..."):
+                            response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": explanation_prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            explanation = result.get("response", "").strip()
+                            st.markdown("---")
+                            st.subheader("📝 Explanation:")
+                            st.markdown(explanation)
+                            st.markdown("---")
+                            
+                            st.write("**Raw Data (CSV):**")
+                            st.code(result_csv, language="csv")
+                    else:
+                        st.error(result_csv)
+                
                 else:
                     st.error(f"Error: {response.status_code}")
+            
             except requests.exceptions.Timeout:
                 st.error(f"Timeout after {timeout_seconds}s")
             except requests.exceptions.ConnectionError:
