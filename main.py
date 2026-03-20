@@ -53,17 +53,17 @@ def get_column_statistics(data, column):
     try:
         stats = {
             "Data Type": str(data[column].dtype),
-            "Non-Null Count": data[column].count(),
-            "Null Count": data[column].isnull().sum(),
-            "Unique Values": data[column].nunique(),
+            "Non-Null Count": int(data[column].count()),
+            "Null Count": int(data[column].isnull().sum()),
+            "Unique Values": int(data[column].nunique()),
         }
         if data[column].dtype in ['int64', 'float64']:
             stats.update({
-                "Min": data[column].min(),
-                "Max": data[column].max(),
-                "Mean": data[column].mean(),
-                "Median": data[column].median(),
-                "Std Dev": data[column].std(),
+                "Min": float(data[column].min()),
+                "Max": float(data[column].max()),
+                "Mean": float(data[column].mean()),
+                "Median": float(data[column].median()),
+                "Std Dev": float(data[column].std()),
             })
         else:
             stats["Sample Values"] = ", ".join(str(v) for v in data[column].unique()[:5])
@@ -75,36 +75,74 @@ def ai_understand_query(user_question, available_columns, timeout_seconds, tempe
     """Use AI to understand what the user is asking"""
     columns_str = ", ".join(available_columns)
     
-    prompt = f"""Analyze this user question and determine what analysis they want. Respond ONLY with valid JSON.
+    prompt = f"""You are a data analyst. Read this question and identify what analysis is needed.
 
 Available columns: {columns_str}
 
-User question: {user_question}
+Question: {user_question}
 
-Respond with ONLY this JSON format (no other text):
-{{
-  "query_type": "one of: total_by_period, best_worst_by_category, filter_and_sum, or custom_grouping",
-  "period_column": "column name for time period or null",
-  "category_column": "column name for category or null",
-  "value_column": "column name for values to aggregate",
-  "filter_column": "column to filter by or null",
-  "filter_value": "value to filter or null",
-  "agg_function": "sum, max, min, or average",
-  "reasoning": "brief explanation of what the user is asking"
-}}"""
+Answer with ONLY these 7 lines, nothing else:
+QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
+PERIOD_COLUMN: [column name or NONE]
+CATEGORY_COLUMN: [column name or NONE]
+VALUE_COLUMN: [column name]
+FILTER_COLUMN: [column name or NONE]
+FILTER_VALUE: [value or NONE]
+REASONING: [one sentence explaining the question]"""
     
     try:
-        response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": temperature}, timeout=timeout_seconds)
+        response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
         
         if response.status_code == 200:
             result = response.json()
             ai_response = result.get("response", "").strip()
             
-            try:
-                query_params = json.loads(ai_response)
-                return query_params, None
-            except:
-                return None, "Could not parse AI response as JSON"
+            # Parse the text response
+            lines = ai_response.split('\n')
+            query_params = {
+                "query_type": "total_by_period",
+                "period_column": None,
+                "category_column": None,
+                "value_column": None,
+                "filter_column": None,
+                "filter_value": None,
+                "reasoning": "Analysis requested"
+            }
+            
+            for line in lines:
+                if "QUERY_TYPE:" in line:
+                    val = line.split(":", 1)[1].strip().lower()
+                    if "best" in val or "worst" in val or "category" in val:
+                        query_params["query_type"] = "best_worst_by_category"
+                    elif "filter" in val:
+                        query_params["query_type"] = "filter_and_sum"
+                    else:
+                        query_params["query_type"] = "total_by_period"
+                
+                elif "PERIOD_COLUMN:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    query_params["period_column"] = val if val.upper() != "NONE" else None
+                
+                elif "CATEGORY_COLUMN:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    query_params["category_column"] = val if val.upper() != "NONE" else None
+                
+                elif "VALUE_COLUMN:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    query_params["value_column"] = val if val.upper() != "NONE" else None
+                
+                elif "FILTER_COLUMN:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    query_params["filter_column"] = val if val.upper() != "NONE" else None
+                
+                elif "FILTER_VALUE:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    query_params["filter_value"] = val if val.upper() != "NONE" else None
+                
+                elif "REASONING:" in line:
+                    query_params["reasoning"] = line.split(":", 1)[1].strip()
+            
+            return query_params, None
         else:
             return None, f"AI Error: {response.status_code}"
     except requests.exceptions.Timeout:
@@ -170,11 +208,8 @@ def execute_query(data, query_params):
             
             return result, total
         
-        elif query_type == "custom_grouping":
-            # This would need multiple group columns - return None for now
-            return None, "Custom grouping needs manual selection"
-        
-        return None, "Unknown query type"
+        else:
+            return None, "Unknown query type"
     
     except Exception as e:
         return None, f"Execution error: {str(e)}"
@@ -213,7 +248,7 @@ if uploaded_file:
             with col2:
                 st.metric("Total Columns", len(data.columns))
             with col3:
-                st.metric("Missing Values", data.isnull().sum().sum())
+                st.metric("Missing Values", int(data.isnull().sum().sum()))
             with col4:
                 st.metric("Data Size", f"{data.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
             
@@ -228,10 +263,10 @@ if uploaded_file:
             st.subheader("🔍 Column Details")
             col_info = pd.DataFrame({
                 'Column Name': data.columns,
-                'Data Type': data.dtypes.values,
-                'Non-Null Count': data.count().values,
-                'Null Count': data.isnull().sum().values,
-                'Unique Values': [f"{data[col].nunique():,}" for col in data.columns]
+                'Data Type': [str(dt) for dt in data.dtypes.values],
+                'Non-Null Count': [int(data[col].count()) for col in data.columns],
+                'Null Count': [int(data[col].isnull().sum()) for col in data.columns],
+                'Unique Values': [f"{int(data[col].nunique()):,}" for col in data.columns]
             })
             st.dataframe(col_info, use_container_width=True)
         
@@ -344,7 +379,6 @@ if uploaded_file:
                         st.write(f"  - Category: {query_params.get('category_column')}")
                         st.write(f"  - Value: {query_params.get('value_column')}")
                         st.write(f"  - Filter: {query_params.get('filter_column')} = {query_params.get('filter_value')}")
-                        st.write(f"  - Function: {query_params.get('agg_function')}")
                 
                 # Step 2: Python executes
                 with st.spinner("📊 Calculating results..."):
