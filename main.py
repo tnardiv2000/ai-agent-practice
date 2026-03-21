@@ -79,29 +79,22 @@ def ai_understand_query(user_question, available_columns, timeout_seconds, tempe
 
 Available columns: {columns_str}
 
-Dimension columns (for grouping/categorizing): Geo, Country, Sales_Rep, Customer, Category, Product
+Dimension columns (for grouping): Geo, Country, Sales_Rep, Customer, Category, Product
 Metric columns (for values): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
 Time columns: Year, Quarter, Month, Date
 
 Question: {user_question}
 
-RULES FOR QUERY TYPE DETECTION:
-1. If asking "by [dimension]" (like "by product", "by country", "by geo") -> best_worst_by_category with CATEGORY_COLUMN=[dimension]
-2. If asking about "highest", "best", "top", "lowest", "worst", "bottom" FOR A DIMENSION -> best_worst_by_category
-3. If asking "WHERE" something equals a value -> filter_and_sum
-4. If asking "yearly", "by year", "per year", "year over year" AND NO other dimension mentioned -> total_by_period
-5. For "average by X" -> best_worst_by_category with CATEGORY_COLUMN=X
-6. VALUE_COLUMN must be from metric columns. CATEGORY_COLUMN must be from dimension columns.
-7. Extract exact values from the question for FILTER_VALUE (e.g., "North America", "Brazil")
+Extract the most relevant column that the question asks about. If multiple columns mentioned, pick the PRIMARY one being asked.
 
 Answer with ONLY these 7 lines, nothing else:
 QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
-PERIOD_COLUMN: [column name or NONE]
-CATEGORY_COLUMN: [column name or NONE]
-VALUE_COLUMN: [column name from metric columns or NONE]
-FILTER_COLUMN: [column name or NONE]
+PERIOD_COLUMN: [Year OR Quarter OR Month OR NONE]
+CATEGORY_COLUMN: [Geo OR Country OR Sales_Rep OR Customer OR Category OR Product OR NONE]
+VALUE_COLUMN: [the main metric column being asked about]
+FILTER_COLUMN: [dimension to filter by or NONE]
 FILTER_VALUE: [exact value from question or NONE]
-REASONING: [one sentence explaining the question]"""
+REASONING: [one sentence]"""
     
     try:
         response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
@@ -154,6 +147,33 @@ REASONING: [one sentence explaining the question]"""
                 
                 elif "REASONING:" in line:
                     query_params["reasoning"] = line.split(":", 1)[1].strip()
+            
+            # POST-PROCESSING: Detect query type from keywords if AI got it wrong
+            question_lower = user_question.lower()
+            
+            # Check for best/worst keywords
+            if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'bottom', 'leader', 'champion']):
+                # This should be best_worst_by_category
+                if query_params["query_type"] != "filter_and_sum":
+                    query_params["query_type"] = "best_worst_by_category"
+                    
+                    # If no category column was found, try to infer it
+                    if not query_params["category_column"]:
+                        for dim in DIMENSION_COLUMNS:
+                            if dim.lower() in question_lower:
+                                query_params["category_column"] = dim
+                                break
+            
+            # Check for "by" keyword (indicates grouping/category)
+            if " by " in question_lower and query_params["query_type"] == "total_by_period":
+                query_params["query_type"] = "best_worst_by_category"
+                # Extract what comes after "by"
+                by_index = question_lower.find(" by ")
+                after_by = question_lower[by_index + 4:].split()[0]
+                for dim in DIMENSION_COLUMNS:
+                    if dim.lower() in after_by.lower() or after_by.lower() in dim.lower():
+                        query_params["category_column"] = dim
+                        break
             
             return query_params, None
         else:
