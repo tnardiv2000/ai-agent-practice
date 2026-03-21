@@ -43,6 +43,36 @@ def get_recommended_functions(col_name):
     }
     return recommendations.get(col_type, recommendations['numeric'])
 
+def find_correct_column(data, col_name):
+    """Find the correct column name in data, handling typos and variations"""
+    if not col_name:
+        return None
+    
+    # Exact match
+    if col_name in data.columns:
+        return col_name
+    
+    col_name_lower = col_name.lower()
+    
+    # Try case-insensitive match
+    for actual_col in data.columns:
+        if actual_col.lower() == col_name_lower:
+            return actual_col
+    
+    # Try removing underscores/spaces
+    col_normalized = col_name_lower.replace('_', '').replace(' ', '')
+    for actual_col in data.columns:
+        actual_normalized = actual_col.lower().replace('_', '').replace(' ', '')
+        if actual_normalized == col_normalized:
+            return actual_col
+    
+    # Try partial match
+    for actual_col in data.columns:
+        if col_name_lower in actual_col.lower() or actual_col.lower() in col_name_lower:
+            return actual_col
+    
+    return None
+
 def find_correct_filter_column(data, filter_value):
     """Search ALL dimension columns to find which one contains this value"""
     if not filter_value:
@@ -172,6 +202,22 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
+            # Fix column names using smart matching
+            if extracted["metric"]:
+                correct_metric = find_correct_column(data, extracted["metric"])
+                if correct_metric:
+                    extracted["metric"] = correct_metric
+            
+            if extracted["dimension"]:
+                correct_dimension = find_correct_column(data, extracted["dimension"])
+                if correct_dimension:
+                    extracted["dimension"] = correct_dimension
+            
+            if extracted["time_period"]:
+                correct_time = find_correct_column(data, extracted["time_period"])
+                if correct_time:
+                    extracted["time_period"] = correct_time
+            
             # Build query_params
             query_params = {
                 "query_type": "total_by_period",
@@ -188,7 +234,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             # Check if this is a filter query (has a specific value)
             if extracted["filter_value"]:
-                # Search through all dimension columns to find which one has this value
                 correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 
                 if correct_col:
@@ -197,7 +242,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
                 else:
-                    # Value not found, but we still have it - try with the dimension
                     query_params["query_type"] = "filter_and_sum"
                     query_params["filter_column"] = extracted["dimension"]
                     query_params["filter_value"] = extracted["filter_value"]
