@@ -44,18 +44,26 @@ def get_recommended_functions(col_name):
     return recommendations.get(col_type, recommendations['numeric'])
 
 def find_correct_filter_column(data, filter_value):
-    """Try to find which column contains the filter value"""
+    """Search ALL dimension columns to find which one contains this value"""
     if not filter_value:
         return None
     
-    filter_value_str = str(filter_value).lower()
+    filter_value_lower = str(filter_value).lower().strip()
     
-    # Check each dimension column for the value
+    # Try exact match first, then partial match
     for col in DIMENSION_COLUMNS:
         if col in data.columns:
-            col_values = data[col].astype(str).str.lower().unique()
-            for val in col_values:
-                if filter_value_str in val or val in filter_value_str:
+            for actual_value in data[col].dropna().unique():
+                actual_value_lower = str(actual_value).lower().strip()
+                if actual_value_lower == filter_value_lower:
+                    return col
+    
+    # Try partial match
+    for col in DIMENSION_COLUMNS:
+        if col in data.columns:
+            for actual_value in data[col].dropna().unique():
+                actual_value_lower = str(actual_value).lower().strip()
+                if filter_value_lower in actual_value_lower or actual_value_lower in filter_value_lower:
                     return col
     
     return None
@@ -90,41 +98,29 @@ def get_column_statistics(data, column):
 
 def ai_understand_query(user_question, data, timeout_seconds, temperature):
     """Use AI to understand what the user is asking"""
-    available_columns = data.columns.tolist()
     
-    # Get unique values from dimension columns for context
-    dimension_values = {}
-    for col in DIMENSION_COLUMNS:
-        if col in data.columns:
-            unique_vals = data[col].dropna().unique()[:10]  # First 10 values
-            dimension_values[col] = ", ".join(str(v) for v in unique_vals)
-    
-    dim_context = "\n".join([f"{col}: {vals}" for col, vals in dimension_values.items()])
-    
-    prompt = f"""TASK: Extract column names and values from a data analysis question.
+    prompt = f"""TASK: Extract what the user is asking from a data question.
 
-AVAILABLE COLUMNS:
-Metrics (numbers to analyze): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
-Time (for trends): Year, Quarter, Month, Date
-Dimensions (categories):
-{dim_context}
+Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
+Available Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
+Available Time: Year, Quarter, Month, Date
 
 QUESTION: {user_question}
 
-IMPORTANT RULES:
-- METRIC should be ONE metric column (Spend, Revenue, Profit, etc)
-- DIMENSION should be the dimension column that contains the specific value
-- FILTER_VALUE is the EXACT specific value mentioned (like "North America", "2022", "Product A"), NOT a column name
-- FILTER_COLUMN should be the dimension column name that the filter value belongs to
+RULES:
+- METRIC: Which NUMBER column is being asked about?
+- DIMENSION: Which dimension to GROUP BY or FILTER (Geo, Country, Product, etc)?
+- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, etc)?
+- TIME_PERIOD: How to break down by time (Year, Month, Quarter)?
 
 RESPOND WITH EXACTLY 7 LINES:
-METRIC: [metric column name or NONE]
-DIMENSION: [dimension column name for grouping, or NONE]
+METRIC: [metric name or NONE]
+DIMENSION: [dimension name or NONE]
 TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
-FILTER_COLUMN: [dimension column name like Geo or Country, or NONE]
-FILTER_VALUE: [specific value like North America or Product A, or NONE]
+FILTER_VALUE: [specific value mentioned or NONE]
 QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
-REASONING: [one line]"""
+REASONING: [one line]
+AI_CONFIDENCE: [high OR medium OR low]"""
     
     try:
         response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
@@ -138,10 +134,10 @@ REASONING: [one line]"""
                 "metric": None,
                 "dimension": None,
                 "time_period": None,
-                "filter_column": None,
                 "filter_value": None,
                 "query_pattern": None,
-                "reasoning": "Analysis"
+                "reasoning": "Analysis",
+                "confidence": "medium"
             }
             
             for line in lines:
@@ -160,11 +156,6 @@ REASONING: [one line]"""
                     if val.upper() != "NONE":
                         extracted["time_period"] = val
                 
-                elif "FILTER_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE":
-                        extracted["filter_column"] = val
-                
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
@@ -176,11 +167,15 @@ REASONING: [one line]"""
                 
                 elif "REASONING:" in line:
                     extracted["reasoning"] = line.split(":", 1)[1].strip()
+                
+                elif "AI_CONFIDENCE:" in line:
+                    val = line.split(":", 1)[1].strip().lower()
+                    extracted["confidence"] = val
             
-            # Convert to query_params format
+            # Build query_params
             query_params = {
                 "query_type": "total_by_period",
-                "period_column": None,
+                "period_column": extracted["time_period"],
                 "category_column": None,
                 "value_column": extracted["metric"],
                 "filter_column": None,
@@ -188,46 +183,42 @@ REASONING: [one line]"""
                 "reasoning": extracted["reasoning"]
             }
             
-            # Determine query type based on pattern
-            pattern = extracted.get("query_pattern", "").lower()
-            if "category" in pattern or "comparison" in pattern:
-                query_params["query_type"] = "best_worst_by_category"
-                query_params["category_column"] = extracted["dimension"]
-            elif "filtered" in pattern or extracted["filter_column"] or extracted["filter_value"]:
-                query_params["query_type"] = "filter_and_sum"
-                query_params["filter_column"] = extracted["filter_column"]
-                query_params["filter_value"] = extracted["filter_value"]
-            else:  # yearly_total
-                query_params["query_type"] = "total_by_period"
-                query_params["period_column"] = extracted["time_period"]
-            
-            # Post-processing: Smart filter column detection
+            # Determine query type and find filter column
             question_lower = user_question.lower()
             
-            # If we have a filter value but wrong/no filter column, find the correct one
-            if query_params["filter_value"] and (not query_params["filter_column"] or query_params["filter_column"] not in DIMENSION_COLUMNS):
-                correct_col = find_correct_filter_column(data, query_params["filter_value"])
-                if correct_col:
-                    query_params["filter_column"] = correct_col
-                else:
-                    # Fallback: use the dimension if it exists
-                    query_params["filter_column"] = extracted["dimension"]
+            # Check if this is a filter query (has a specific value)
+            if extracted["filter_value"]:
+                # Search through all dimension columns to find which one has this value
+                correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 
-                query_params["query_type"] = "filter_and_sum"
+                if correct_col:
+                    query_params["query_type"] = "filter_and_sum"
+                    query_params["filter_column"] = correct_col
+                    query_params["filter_value"] = extracted["filter_value"]
+                    query_params["period_column"] = None
+                else:
+                    # Value not found, but we still have it - try with the dimension
+                    query_params["query_type"] = "filter_and_sum"
+                    query_params["filter_column"] = extracted["dimension"]
+                    query_params["filter_value"] = extracted["filter_value"]
+                    query_params["period_column"] = None
             
-            # If asking about "highest/lowest/best/worst"
-            if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
+            # Check if asking about "highest/lowest/best/worst"
+            elif any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
-                query_params["filter_column"] = None
-                query_params["filter_value"] = None
+                query_params["period_column"] = None
             
-            # If asking "by X" without a specific filter value
-            if " by " in question_lower and not extracted["filter_value"]:
+            # Check if asking "by X" for grouping
+            elif " by " in question_lower and extracted["dimension"]:
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
-                query_params["filter_column"] = None
-                query_params["filter_value"] = None
+                query_params["period_column"] = None
+            
+            # Otherwise use time period grouping
+            else:
+                query_params["query_type"] = "total_by_period"
+                query_params["period_column"] = extracted["time_period"] or "Year"
             
             return query_params, None
         else:
@@ -301,7 +292,7 @@ def execute_query(data, query_params):
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
             if len(filtered) == 0:
-                return None, f"No data found for {filter_col}='{filter_val}'"
+                return None, f"No data found for {filter_col}='{filter_val}'. Available values in {filter_col}: {data[filter_col].unique()[:5].tolist()}"
             
             total = filtered[value_col].sum()
             result_table = filtered[[filter_col, value_col]].copy()
