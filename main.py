@@ -73,28 +73,30 @@ def get_column_statistics(data, column):
 
 def ai_understand_query(user_question, available_columns, timeout_seconds, temperature):
     """Use AI to understand what the user is asking"""
-    columns_str = ", ".join(available_columns)
     
-    prompt = f"""You are a data analyst. Read this question and identify what analysis is needed.
+    prompt = f"""TASK: Extract column names from a data analysis question.
 
-Available columns: {columns_str}
+AVAILABLE COLUMNS:
+Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
+Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
+Time: Year, Quarter, Month, Date
 
-Dimension columns (for grouping): Geo, Country, Sales_Rep, Customer, Category, Product
-Metric columns (for values): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
-Time columns: Year, Quarter, Month, Date
+QUESTION: {user_question}
 
-Question: {user_question}
+IDENTIFY:
+1. What metric/column is being asked about? (from Metrics list)
+2. What dimension/category is being filtered/grouped by? (from Dimensions list)
+3. What specific value to filter for? (e.g., "North America", "2022")
+4. Is this asking about totals over time (yearly), or by a category?
 
-Extract the most relevant column that the question asks about. If multiple columns mentioned, pick the PRIMARY one being asked.
-
-Answer with ONLY these 7 lines, nothing else:
-QUERY_TYPE: [total_by_period OR best_worst_by_category OR filter_and_sum]
-PERIOD_COLUMN: [Year OR Quarter OR Month OR NONE]
-CATEGORY_COLUMN: [Geo OR Country OR Sales_Rep OR Customer OR Category OR Product OR NONE]
-VALUE_COLUMN: [the main metric column being asked about]
-FILTER_COLUMN: [dimension to filter by or NONE]
-FILTER_VALUE: [exact value from question or NONE]
-REASONING: [one sentence]"""
+RESPOND WITH EXACTLY 7 LINES:
+METRIC: [single metric column name or NONE]
+DIMENSION: [single dimension column name or NONE]
+TIME_PERIOD: [Year or Quarter or Month or NONE]
+FILTER_COLUMN: [column name to filter by or NONE]
+FILTER_VALUE: [exact value mentioned in question or NONE]
+QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
+REASONING: [one line explanation]"""
     
     try:
         response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
@@ -103,74 +105,94 @@ REASONING: [one sentence]"""
             result = response.json()
             ai_response = result.get("response", "").strip()
             
-            # Parse the text response
             lines = ai_response.split('\n')
+            extracted = {
+                "metric": None,
+                "dimension": None,
+                "time_period": None,
+                "filter_column": None,
+                "filter_value": None,
+                "query_pattern": None,
+                "reasoning": "Analysis"
+            }
+            
+            for line in lines:
+                if "METRIC:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val.upper() != "NONE":
+                        extracted["metric"] = val
+                
+                elif "DIMENSION:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val.upper() != "NONE":
+                        extracted["dimension"] = val
+                
+                elif "TIME_PERIOD:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val.upper() != "NONE":
+                        extracted["time_period"] = val
+                
+                elif "FILTER_COLUMN:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val.upper() != "NONE":
+                        extracted["filter_column"] = val
+                
+                elif "FILTER_VALUE:" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val.upper() != "NONE":
+                        extracted["filter_value"] = val
+                
+                elif "QUERY_PATTERN:" in line:
+                    val = line.split(":", 1)[1].strip().lower()
+                    extracted["query_pattern"] = val
+                
+                elif "REASONING:" in line:
+                    extracted["reasoning"] = line.split(":", 1)[1].strip()
+            
+            # Convert to query_params format
             query_params = {
                 "query_type": "total_by_period",
                 "period_column": None,
                 "category_column": None,
-                "value_column": None,
+                "value_column": extracted["metric"],
                 "filter_column": None,
                 "filter_value": None,
-                "reasoning": "Analysis requested"
+                "reasoning": extracted["reasoning"]
             }
             
-            for line in lines:
-                if "QUERY_TYPE:" in line:
-                    val = line.split(":", 1)[1].strip().lower()
-                    if "best_worst" in val or "best" in val or "worst" in val or "category" in val:
-                        query_params["query_type"] = "best_worst_by_category"
-                    elif "filter" in val:
-                        query_params["query_type"] = "filter_and_sum"
-                    else:
-                        query_params["query_type"] = "total_by_period"
-                
-                elif "PERIOD_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    query_params["period_column"] = val if val.upper() != "NONE" else None
-                
-                elif "CATEGORY_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    query_params["category_column"] = val if val.upper() != "NONE" else None
-                
-                elif "VALUE_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    query_params["value_column"] = val if val.upper() != "NONE" else None
-                
-                elif "FILTER_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    query_params["filter_column"] = val if val.upper() != "NONE" else None
-                
-                elif "FILTER_VALUE:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    query_params["filter_value"] = val if val.upper() != "NONE" else None
-                
-                elif "REASONING:" in line:
-                    query_params["reasoning"] = line.split(":", 1)[1].strip()
+            # Determine query type
+            pattern = extracted.get("query_pattern", "").lower()
+            if "category" in pattern or "comparison" in pattern:
+                query_params["query_type"] = "best_worst_by_category"
+                query_params["category_column"] = extracted["dimension"]
+            elif "filtered" in pattern or extracted["filter_column"]:
+                query_params["query_type"] = "filter_and_sum"
+                query_params["filter_column"] = extracted["filter_column"] or extracted["dimension"]
+                query_params["filter_value"] = extracted["filter_value"]
+            else:  # yearly_total
+                query_params["query_type"] = "total_by_period"
+                query_params["period_column"] = extracted["time_period"]
             
-            # POST-PROCESSING: Detect query type from keywords
+            # Post-processing fixes
             question_lower = user_question.lower()
             
-            # Check for best/worst keywords
-            if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'bottom', 'leader', 'champion']):
-                if query_params["query_type"] != "filter_and_sum":
-                    query_params["query_type"] = "best_worst_by_category"
-                    
-                    if not query_params["category_column"]:
-                        for dim in DIMENSION_COLUMNS:
-                            if dim.lower() in question_lower:
-                                query_params["category_column"] = dim
-                                break
+            # If question has specific value like "North America" and metric, treat as filter
+            if extracted["filter_value"] or any(val in question_lower for val in ["where", "in ", "from "]):
+                if not query_params["filter_column"]:
+                    query_params["filter_column"] = extracted["dimension"] or extracted["filter_column"]
+                if not query_params["filter_value"]:
+                    query_params["filter_value"] = extracted["filter_value"]
+                query_params["query_type"] = "filter_and_sum"
             
-            # Check for "by" keyword
-            if " by " in question_lower and query_params["query_type"] == "total_by_period":
+            # If asking about "highest/lowest/best/worst"
+            if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
                 query_params["query_type"] = "best_worst_by_category"
-                by_index = question_lower.find(" by ")
-                after_by = question_lower[by_index + 4:].split()[0]
-                for dim in DIMENSION_COLUMNS:
-                    if dim.lower() in after_by.lower() or after_by.lower() in dim.lower():
-                        query_params["category_column"] = dim
-                        break
+                query_params["category_column"] = extracted["dimension"]
+            
+            # If asking "by X"
+            if " by " in question_lower and not extracted["filter_value"]:
+                query_params["query_type"] = "best_worst_by_category"
+                query_params["category_column"] = extracted["dimension"]
             
             return query_params, None
         else:
@@ -240,11 +262,13 @@ def execute_query(data, query_params):
                 return None, f"Missing filter parameters. Filter Column: {filter_col}, Filter Value: {filter_val}, Value Column: {value_col}"
             
             if filter_col not in data.columns or value_col not in data.columns:
-                return None, "Invalid column names"
+                return None, f"Invalid columns. Filter: {filter_col}, Value: {value_col}. Available: {list(data.columns)}"
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
-            total = filtered[value_col].sum()
+            if len(filtered) == 0:
+                return None, f"No data found for {filter_col}={filter_val}"
             
+            total = filtered[value_col].sum()
             result_table = filtered[[filter_col, value_col]].copy()
             
             return (result_table, total), None
@@ -314,7 +338,7 @@ if uploaded_file:
         st.divider()
         
         st.subheader("🧮 Manual Data Calculations")
-        st.info("✨ Smart Aggregation: Automatically selects the best function for each column type!")
+        st.info("�� Smart Aggregation: Automatically selects the best function for each column type!")
         
         calc_tab1, calc_tab2, calc_tab3, calc_tab4 = st.tabs(
             ["📊 Column Stats", "🔍 Filter & View", "👥 Group & Aggregate", "📋 Custom View"]
@@ -397,7 +421,6 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        # Use form to isolate submissions
         with st.form("query_form", clear_on_submit=True):
             user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100)
             submit_button = st.form_submit_button("📊 Analyze", use_container_width=True)
@@ -405,14 +428,12 @@ if uploaded_file:
         if submit_button and user_question:
             st.write("🤖 Processing your question...")
             
-            # Step 1: AI understands the question
             with st.spinner("🧠 AI analyzing question..."):
                 query_params, ai_error = ai_understand_query(user_question, data.columns.tolist(), timeout_seconds, temperature)
             
             if ai_error:
                 st.error(f"❌ AI Error: {ai_error}")
             elif query_params:
-                # Show what AI understood
                 if show_steps:
                     with st.expander("🔍 AI Understanding"):
                         st.write(f"**Your Question:** {user_question}")
@@ -428,7 +449,6 @@ if uploaded_file:
                         })
                         st.write(f"**Available columns in dataset:** {data.columns.tolist()}")
                 
-                # Step 2: Python executes
                 with st.spinner("📊 Calculating results..."):
                     result, error = execute_query(data, query_params)
                 
