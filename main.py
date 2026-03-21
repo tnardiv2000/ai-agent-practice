@@ -43,6 +43,23 @@ def get_recommended_functions(col_name):
     }
     return recommendations.get(col_type, recommendations['numeric'])
 
+def find_correct_filter_column(data, filter_value):
+    """Try to find which column contains the filter value"""
+    if not filter_value:
+        return None
+    
+    filter_value_str = str(filter_value).lower()
+    
+    # Check each dimension column for the value
+    for col in DIMENSION_COLUMNS:
+        if col in data.columns:
+            col_values = data[col].astype(str).str.lower().unique()
+            for val in col_values:
+                if filter_value_str in val or val in filter_value_str:
+                    return col
+    
+    return None
+
 with st.sidebar:
     st.header("⚙️ Settings")
     temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
@@ -71,31 +88,41 @@ def get_column_statistics(data, column):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def ai_understand_query(user_question, available_columns, timeout_seconds, temperature):
+def ai_understand_query(user_question, data, timeout_seconds, temperature):
     """Use AI to understand what the user is asking"""
+    available_columns = data.columns.tolist()
+    
+    # Get unique values from dimension columns for context
+    dimension_values = {}
+    for col in DIMENSION_COLUMNS:
+        if col in data.columns:
+            unique_vals = data[col].dropna().unique()[:10]  # First 10 values
+            dimension_values[col] = ", ".join(str(v) for v in unique_vals)
+    
+    dim_context = "\n".join([f"{col}: {vals}" for col, vals in dimension_values.items()])
     
     prompt = f"""TASK: Extract column names and values from a data analysis question.
 
 AVAILABLE COLUMNS:
-Dimensions (categories): Geo, Country, Sales_Rep, Customer, Category, Product
 Metrics (numbers to analyze): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
 Time (for trends): Year, Quarter, Month, Date
+Dimensions (categories):
+{dim_context}
 
 QUESTION: {user_question}
 
 IMPORTANT RULES:
-- METRIC should be ONE metric column (Spend, Revenue, etc)
-- DIMENSION should be ONE dimension column (Geo, Country, etc)
-- FILTER_VALUE is a SPECIFIC VALUE mentioned (like "North America", "2022", "Product A"), NOT a column name
-- If question mentions a place/region/category value, that's a FILTER_VALUE
-- TIME_PERIOD is how to group time (Year, Quarter, Month)
+- METRIC should be ONE metric column (Spend, Revenue, Profit, etc)
+- DIMENSION should be the dimension column that contains the specific value
+- FILTER_VALUE is the EXACT specific value mentioned (like "North America", "2022", "Product A"), NOT a column name
+- FILTER_COLUMN should be the dimension column name that the filter value belongs to
 
 RESPOND WITH EXACTLY 7 LINES:
-METRIC: [Spend OR Revenue OR Profit OR other metric, or NONE]
-DIMENSION: [Geo OR Country OR Product OR other dimension, or NONE]
+METRIC: [metric column name or NONE]
+DIMENSION: [dimension column name for grouping, or NONE]
 TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
-FILTER_COLUMN: [which dimension to filter by - must be a column name like Geo or Country, or NONE]
-FILTER_VALUE: [specific value like North America or Product A or 2022, or NONE]
+FILTER_COLUMN: [dimension column name like Geo or Country, or NONE]
+FILTER_VALUE: [specific value like North America or Product A, or NONE]
 QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
 REASONING: [one line]"""
     
@@ -136,9 +163,7 @@ REASONING: [one line]"""
                 elif "FILTER_COLUMN:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
-                        # Ensure it's a valid dimension column
-                        if val in DIMENSION_COLUMNS:
-                            extracted["filter_column"] = val
+                        extracted["filter_column"] = val
                 
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
@@ -168,7 +193,7 @@ REASONING: [one line]"""
             if "category" in pattern or "comparison" in pattern:
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
-            elif "filtered" in pattern or extracted["filter_column"]:
+            elif "filtered" in pattern or extracted["filter_column"] or extracted["filter_value"]:
                 query_params["query_type"] = "filter_and_sum"
                 query_params["filter_column"] = extracted["filter_column"]
                 query_params["filter_value"] = extracted["filter_value"]
@@ -176,20 +201,18 @@ REASONING: [one line]"""
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"]
             
-            # Post-processing: Fix common mistakes
+            # Post-processing: Smart filter column detection
             question_lower = user_question.lower()
             
-            # If AI put a value in filter_column, swap it
-            if query_params["filter_column"] and query_params["filter_column"] not in DIMENSION_COLUMNS:
-                # If it's not a valid column, it's probably a value
-                if query_params["filter_value"] is None:
-                    query_params["filter_value"] = query_params["filter_column"]
-                # Try to infer the actual filter column
-                query_params["filter_column"] = extracted["dimension"]
-            
-            # If we have a filter value but no filter column, use the dimension
-            if query_params["filter_value"] and not query_params["filter_column"]:
-                query_params["filter_column"] = extracted["dimension"]
+            # If we have a filter value but wrong/no filter column, find the correct one
+            if query_params["filter_value"] and (not query_params["filter_column"] or query_params["filter_column"] not in DIMENSION_COLUMNS):
+                correct_col = find_correct_filter_column(data, query_params["filter_value"])
+                if correct_col:
+                    query_params["filter_column"] = correct_col
+                else:
+                    # Fallback: use the dimension if it exists
+                    query_params["filter_column"] = extracted["dimension"]
+                
                 query_params["query_type"] = "filter_and_sum"
             
             # If asking about "highest/lowest/best/worst"
@@ -441,7 +464,7 @@ if uploaded_file:
             st.write("🤖 Processing your question...")
             
             with st.spinner("🧠 AI analyzing question..."):
-                query_params, ai_error = ai_understand_query(user_question, data.columns.tolist(), timeout_seconds, temperature)
+                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature)
             
             if ai_error:
                 st.error(f"❌ AI Error: {ai_error}")
