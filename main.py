@@ -48,6 +48,9 @@ with st.sidebar:
     temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
     show_steps = st.checkbox("Show AI Reasoning", value=True)
     timeout_seconds = st.slider("AI Response Timeout (seconds)", 60, 1800, 600, step=60)
+    if st.button("🔄 Clear All Cache"):
+        st.cache_data.clear()
+        st.rerun()
 
 def get_column_statistics(data, column):
     try:
@@ -153,7 +156,6 @@ REASONING: [one sentence]"""
             
             # Check for best/worst keywords
             if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'bottom', 'leader', 'champion']):
-                # This should be best_worst_by_category
                 if query_params["query_type"] != "filter_and_sum":
                     query_params["query_type"] = "best_worst_by_category"
                     
@@ -221,17 +223,14 @@ def execute_query(data, query_params):
             value_col_type = get_column_type(value_col)
             
             if value_col_type == 'percentage':
-                # For percentages, use mean (average)
                 result = data.groupby(category_col)[value_col].mean().reset_index()
                 result = result.sort_values(value_col, ascending=False)
                 result.columns = [category_col, f"Average {value_col}"]
             elif value_col_type == 'financial':
-                # For financial, use sum
                 result = data.groupby(category_col)[value_col].sum().reset_index()
                 result = result.sort_values(value_col, ascending=False)
                 result.columns = [category_col, f"Total {value_col}"]
             else:
-                # For others, use max
                 result = data.groupby(category_col)[value_col].max().reset_index()
                 result = result.sort_values(value_col, ascending=False)
                 result.columns = [category_col, f"Max {value_col}"]
@@ -404,9 +403,15 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100)
+        # Initialize session state for question tracking
+        if 'last_question' not in st.session_state:
+            st.session_state.last_question = ""
         
-        if user_question:
+        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100, key="user_question_input")
+        
+        # Only process if question is new
+        if user_question and user_question != st.session_state.last_question:
+            st.session_state.last_question = user_question
             st.write("🤖 Processing your question...")
             
             # Step 1: AI understands the question
