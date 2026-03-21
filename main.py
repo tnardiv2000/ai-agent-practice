@@ -48,9 +48,6 @@ with st.sidebar:
     temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
     show_steps = st.checkbox("Show AI Reasoning", value=True)
     timeout_seconds = st.slider("AI Response Timeout (seconds)", 60, 1800, 600, step=60)
-    if st.button("🔄 Clear All Cache"):
-        st.cache_data.clear()
-        st.rerun()
 
 def get_column_statistics(data, column):
     try:
@@ -151,7 +148,7 @@ REASONING: [one sentence]"""
                 elif "REASONING:" in line:
                     query_params["reasoning"] = line.split(":", 1)[1].strip()
             
-            # POST-PROCESSING: Detect query type from keywords if AI got it wrong
+            # POST-PROCESSING: Detect query type from keywords
             question_lower = user_question.lower()
             
             # Check for best/worst keywords
@@ -159,17 +156,15 @@ REASONING: [one sentence]"""
                 if query_params["query_type"] != "filter_and_sum":
                     query_params["query_type"] = "best_worst_by_category"
                     
-                    # If no category column was found, try to infer it
                     if not query_params["category_column"]:
                         for dim in DIMENSION_COLUMNS:
                             if dim.lower() in question_lower:
                                 query_params["category_column"] = dim
                                 break
             
-            # Check for "by" keyword (indicates grouping/category)
+            # Check for "by" keyword
             if " by " in question_lower and query_params["query_type"] == "total_by_period":
                 query_params["query_type"] = "best_worst_by_category"
-                # Extract what comes after "by"
                 by_index = question_lower.find(" by ")
                 after_by = question_lower[by_index + 4:].split()[0]
                 for dim in DIMENSION_COLUMNS:
@@ -219,7 +214,6 @@ def execute_query(data, query_params):
             if value_col not in data.columns:
                 return None, f"Value column '{value_col}' not found. Available: {list(data.columns)}"
             
-            # Determine aggregation function based on column type
             value_col_type = get_column_type(value_col)
             
             if value_col_type == 'percentage':
@@ -403,15 +397,12 @@ if uploaded_file:
         
         st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
         
-        # Initialize session state for question tracking
-        if 'last_question' not in st.session_state:
-            st.session_state.last_question = ""
+        # Use form to isolate submissions
+        with st.form("query_form", clear_on_submit=True):
+            user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100)
+            submit_button = st.form_submit_button("📊 Analyze", use_container_width=True)
         
-        user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100, key="user_question_input")
-        
-        # Only process if question is new
-        if user_question and user_question != st.session_state.last_question:
-            st.session_state.last_question = user_question
+        if submit_button and user_question:
             st.write("🤖 Processing your question...")
             
             # Step 1: AI understands the question
@@ -447,7 +438,6 @@ if uploaded_file:
                     st.success("✅ Results Calculated!")
                     
                     if isinstance(result, tuple):
-                        # Filter & Sum result
                         result_table, total = result
                         st.metric("Total", f"{total:,.2f}")
                         st.dataframe(result_table, width='stretch')
