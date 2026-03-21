@@ -74,29 +74,30 @@ def get_column_statistics(data, column):
 def ai_understand_query(user_question, available_columns, timeout_seconds, temperature):
     """Use AI to understand what the user is asking"""
     
-    prompt = f"""TASK: Extract column names from a data analysis question.
+    prompt = f"""TASK: Extract column names and values from a data analysis question.
 
 AVAILABLE COLUMNS:
-Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
-Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
-Time: Year, Quarter, Month, Date
+Dimensions (categories): Geo, Country, Sales_Rep, Customer, Category, Product
+Metrics (numbers to analyze): Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
+Time (for trends): Year, Quarter, Month, Date
 
 QUESTION: {user_question}
 
-IDENTIFY:
-1. What metric/column is being asked about? (from Metrics list)
-2. What dimension/category is being filtered/grouped by? (from Dimensions list)
-3. What specific value to filter for? (e.g., "North America", "2022")
-4. Is this asking about totals over time (yearly), or by a category?
+IMPORTANT RULES:
+- METRIC should be ONE metric column (Spend, Revenue, etc)
+- DIMENSION should be ONE dimension column (Geo, Country, etc)
+- FILTER_VALUE is a SPECIFIC VALUE mentioned (like "North America", "2022", "Product A"), NOT a column name
+- If question mentions a place/region/category value, that's a FILTER_VALUE
+- TIME_PERIOD is how to group time (Year, Quarter, Month)
 
 RESPOND WITH EXACTLY 7 LINES:
-METRIC: [single metric column name or NONE]
-DIMENSION: [single dimension column name or NONE]
-TIME_PERIOD: [Year or Quarter or Month or NONE]
-FILTER_COLUMN: [column name to filter by or NONE]
-FILTER_VALUE: [exact value mentioned in question or NONE]
+METRIC: [Spend OR Revenue OR Profit OR other metric, or NONE]
+DIMENSION: [Geo OR Country OR Product OR other dimension, or NONE]
+TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
+FILTER_COLUMN: [which dimension to filter by - must be a column name like Geo or Country, or NONE]
+FILTER_VALUE: [specific value like North America or Product A or 2022, or NONE]
 QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
-REASONING: [one line explanation]"""
+REASONING: [one line]"""
     
     try:
         response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
@@ -135,7 +136,9 @@ REASONING: [one line explanation]"""
                 elif "FILTER_COLUMN:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
-                        extracted["filter_column"] = val
+                        # Ensure it's a valid dimension column
+                        if val in DIMENSION_COLUMNS:
+                            extracted["filter_column"] = val
                 
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
@@ -160,39 +163,48 @@ REASONING: [one line explanation]"""
                 "reasoning": extracted["reasoning"]
             }
             
-            # Determine query type
+            # Determine query type based on pattern
             pattern = extracted.get("query_pattern", "").lower()
             if "category" in pattern or "comparison" in pattern:
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
             elif "filtered" in pattern or extracted["filter_column"]:
                 query_params["query_type"] = "filter_and_sum"
-                query_params["filter_column"] = extracted["filter_column"] or extracted["dimension"]
+                query_params["filter_column"] = extracted["filter_column"]
                 query_params["filter_value"] = extracted["filter_value"]
             else:  # yearly_total
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"]
             
-            # Post-processing fixes
+            # Post-processing: Fix common mistakes
             question_lower = user_question.lower()
             
-            # If question has specific value like "North America" and metric, treat as filter
-            if extracted["filter_value"] or any(val in question_lower for val in ["where", "in ", "from "]):
-                if not query_params["filter_column"]:
-                    query_params["filter_column"] = extracted["dimension"] or extracted["filter_column"]
-                if not query_params["filter_value"]:
-                    query_params["filter_value"] = extracted["filter_value"]
+            # If AI put a value in filter_column, swap it
+            if query_params["filter_column"] and query_params["filter_column"] not in DIMENSION_COLUMNS:
+                # If it's not a valid column, it's probably a value
+                if query_params["filter_value"] is None:
+                    query_params["filter_value"] = query_params["filter_column"]
+                # Try to infer the actual filter column
+                query_params["filter_column"] = extracted["dimension"]
+            
+            # If we have a filter value but no filter column, use the dimension
+            if query_params["filter_value"] and not query_params["filter_column"]:
+                query_params["filter_column"] = extracted["dimension"]
                 query_params["query_type"] = "filter_and_sum"
             
             # If asking about "highest/lowest/best/worst"
             if any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
+                query_params["filter_column"] = None
+                query_params["filter_value"] = None
             
-            # If asking "by X"
+            # If asking "by X" without a specific filter value
             if " by " in question_lower and not extracted["filter_value"]:
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
+                query_params["filter_column"] = None
+                query_params["filter_value"] = None
             
             return query_params, None
         else:
@@ -266,7 +278,7 @@ def execute_query(data, query_params):
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
             if len(filtered) == 0:
-                return None, f"No data found for {filter_col}={filter_val}"
+                return None, f"No data found for {filter_col}='{filter_val}'"
             
             total = filtered[value_col].sum()
             result_table = filtered[[filter_col, value_col]].copy()
@@ -338,7 +350,7 @@ if uploaded_file:
         st.divider()
         
         st.subheader("🧮 Manual Data Calculations")
-        st.info("�� Smart Aggregation: Automatically selects the best function for each column type!")
+        st.info("✨ Smart Aggregation: Automatically selects the best function for each column type!")
         
         calc_tab1, calc_tab2, calc_tab3, calc_tab4 = st.tabs(
             ["📊 Column Stats", "🔍 Filter & View", "👥 Group & Aggregate", "📋 Custom View"]
