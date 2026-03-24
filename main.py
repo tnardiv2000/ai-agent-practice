@@ -98,6 +98,32 @@ def find_correct_filter_column(data, filter_value):
     
     return None
 
+def detect_aggregation_function(question):
+    """Detect what aggregation function the user wants based on keywords"""
+    question_lower = question.lower()
+    
+    # Check for average/mean
+    if any(word in question_lower for word in ['average', 'avg', 'mean']):
+        return 'mean'
+    
+    # Check for total/sum
+    if any(word in question_lower for word in ['total', 'sum']):
+        return 'sum'
+    
+    # Check for highest/max
+    if any(word in question_lower for word in ['highest', 'max', 'maximum']):
+        return 'max'
+    
+    # Check for lowest/min
+    if any(word in question_lower for word in ['lowest', 'min', 'minimum']):
+        return 'min'
+    
+    # Check for count
+    if any(word in question_lower for word in ['count', 'how many']):
+        return 'count'
+    
+    return None
+
 with st.sidebar:
     st.header("⚙️ Settings")
     temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
@@ -226,8 +252,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "value_column": extracted["metric"],
                 "filter_column": None,
                 "filter_value": None,
-                "reasoning": extracted["reasoning"]
+                "reasoning": extracted["reasoning"],
+                "aggregation_function": None
             }
+            
+            # Detect aggregation function from question
+            agg_func = detect_aggregation_function(user_question)
+            if agg_func:
+                query_params["aggregation_function"] = agg_func
             
             # Determine query type and find filter column
             question_lower = user_question.lower()
@@ -296,6 +328,7 @@ def execute_query(data, query_params):
         elif query_type == "best_worst_by_category":
             category_col = query_params.get("category_column")
             value_col = query_params.get("value_column")
+            agg_func = query_params.get("aggregation_function")
             
             if not category_col or not value_col:
                 return None, f"Missing category or value column. Category: {category_col}, Value: {value_col}"
@@ -306,20 +339,35 @@ def execute_query(data, query_params):
             if value_col not in data.columns:
                 return None, f"Value column '{value_col}' not found. Available: {list(data.columns)}"
             
-            value_col_type = get_column_type(value_col)
-            
-            if value_col_type == 'percentage':
+            # Determine aggregation function
+            if agg_func == 'mean':
                 result = data.groupby(category_col)[value_col].mean().reset_index()
-                result = result.sort_values(value_col, ascending=False)
-                result.columns = [category_col, f"Average {value_col}"]
-            elif value_col_type == 'financial':
+                label = f"Average {value_col}"
+            elif agg_func == 'sum':
                 result = data.groupby(category_col)[value_col].sum().reset_index()
-                result = result.sort_values(value_col, ascending=False)
-                result.columns = [category_col, f"Total {value_col}"]
-            else:
+                label = f"Total {value_col}"
+            elif agg_func == 'max':
                 result = data.groupby(category_col)[value_col].max().reset_index()
-                result = result.sort_values(value_col, ascending=False)
-                result.columns = [category_col, f"Max {value_col}"]
+                label = f"Max {value_col}"
+            elif agg_func == 'min':
+                result = data.groupby(category_col)[value_col].min().reset_index()
+                label = f"Min {value_col}"
+            else:
+                # Default based on column type
+                value_col_type = get_column_type(value_col)
+                
+                if value_col_type == 'percentage':
+                    result = data.groupby(category_col)[value_col].mean().reset_index()
+                    label = f"Average {value_col}"
+                elif value_col_type == 'financial':
+                    result = data.groupby(category_col)[value_col].sum().reset_index()
+                    label = f"Total {value_col}"
+                else:
+                    result = data.groupby(category_col)[value_col].max().reset_index()
+                    label = f"Max {value_col}"
+            
+            result = result.sort_values(value_col, ascending=False)
+            result.columns = [category_col, label]
             
             return result, None
         
@@ -509,6 +557,7 @@ if uploaded_file:
                         st.write(f"**Your Question:** {user_question}")
                         st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
                         st.write(f"**Query Type:** `{query_params.get('query_type')}`")
+                        st.write(f"**Aggregation Function:** `{query_params.get('aggregation_function') or 'default'}`")
                         st.write("**Columns to Use:**")
                         st.json({
                             "Period Column": query_params.get('period_column'),
