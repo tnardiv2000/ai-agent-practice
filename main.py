@@ -98,6 +98,47 @@ def find_correct_filter_column(data, filter_value):
     
     return None
 
+def normalize_filter_value(filter_value, filter_column, data):
+    """
+    Normalize filter values to match actual data format.
+    E.g., "Q3" → "3", "Jan" → "1", "2024" → "2024", etc.
+    """
+    if not filter_value or not filter_column:
+        return filter_value
+    
+    filter_value_str = str(filter_value).lower().strip()
+    
+    # Q1, Q2, Q3, Q4 → 1, 2, 3, 4 (for Quarter column)
+    if filter_column.lower() == 'quarter':
+        if filter_value_str.startswith('q'):
+            quarter_num = filter_value_str[1:]  # Remove 'Q'
+            if quarter_num in ['1', '2', '3', '4']:
+                return quarter_num
+    
+    # Month abbreviations → Full names or numbers
+    month_map = {
+        'jan': ['1', 'january'], 'feb': ['2', 'february'], 'mar': ['3', 'march'],
+        'apr': ['4', 'april'], 'may': ['5'], 'jun': ['6', 'june'],
+        'jul': ['7', 'july'], 'aug': ['8', 'august'], 'sep': ['9', 'september'],
+        'oct': ['10', 'october'], 'nov': ['11', 'november'], 'dec': ['12', 'december']
+    }
+    
+    if filter_column.lower() == 'month':
+        for abbr, variants in month_map.items():
+            if filter_value_str.startswith(abbr):
+                # Try to find matching value in data
+                for variant in variants:
+                    for actual_val in data[filter_column].dropna().unique():
+                        if str(actual_val).lower() == variant:
+                            return str(actual_val)
+    
+    # Year - just ensure it's a string
+    if filter_column.lower() == 'year':
+        return str(filter_value)
+    
+    # Default: return as-is
+    return filter_value
+
 def detect_aggregation_function(question, value_col, category_col=None):
     """
     Smart detection that considers:
@@ -184,7 +225,7 @@ QUESTION: {user_question}
 RULES:
 - METRIC: Which NUMBER column is being asked about?
 - DIMENSION: Which dimension to GROUP BY or FILTER (Geo, Country, Product, etc)?
-- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, etc)?
+- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, Q3, etc)?
 - TIME_PERIOD: How to break down by time (Year, Month, Quarter)?
 
 RESPOND WITH EXACTLY 7 LINES:
@@ -314,6 +355,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
             
+            # Normalize filter values to match data format
+            if query_params["filter_value"] and query_params["filter_column"]:
+                query_params["filter_value"] = normalize_filter_value(
+                    query_params["filter_value"],
+                    query_params["filter_column"],
+                    data
+                )
+            
             return query_params, None
         else:
             return None, f"AI Error: {response.status_code}"
@@ -399,6 +448,9 @@ def execute_query(data, query_params):
             
             if filter_col not in data.columns or value_col not in data.columns:
                 return None, f"Invalid columns. Filter: {filter_col}, Value: {value_col}. Available: {list(data.columns)}"
+            
+            # Normalize filter value to match data format
+            filter_val = normalize_filter_value(filter_val, filter_col, data)
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
             if len(filtered) == 0:
