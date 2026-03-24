@@ -218,22 +218,23 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
 
 Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
 Available Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
-Available Time: Year, Quarter, Month, Date
+Available Time Columns: Year, Quarter, Month, Date
 
 QUESTION: {user_question}
 
 RULES:
 - METRIC: Which NUMBER column is being asked about?
-- DIMENSION: Which dimension to GROUP BY or FILTER (Geo, Country, Product, etc)?
-- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, Q3, etc)?
+- DIMENSION: Which dimension to GROUP BY (Geo, Country, Product, etc)?
+- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, Q3, Jan, etc)?
 - TIME_PERIOD: How to break down by time (Year, Month, Quarter)?
+- IMPORTANT: If a time value is mentioned (Q3, 2024, Jan), that goes in FILTER_VALUE and TIME_PERIOD, NOT in DIMENSION
 
 RESPOND WITH EXACTLY 7 LINES:
 METRIC: [metric name or NONE]
 DIMENSION: [dimension name or NONE]
 TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
 FILTER_VALUE: [specific value mentioned or NONE]
-QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
+QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total OR time_filtered]
 REASONING: [one line]
 AI_CONFIDENCE: [high OR medium OR low]"""
     
@@ -323,20 +324,47 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             # Determine query type and find filter column
             question_lower = user_question.lower()
             
-            # Check if this is a filter query (has a specific value)
+            # Check if this is a TIME-based filter query (Q3, Jan, 2024, etc)
             if extracted["filter_value"]:
-                correct_col = find_correct_filter_column(data, extracted["filter_value"])
+                # First check if it's a time value
+                is_time_value = False
+                time_col = None
                 
-                if correct_col:
+                # Check Quarter
+                if extracted["filter_value"].lower().startswith('q') or extracted["filter_value"] in ['1', '2', '3', '4']:
+                    is_time_value = True
+                    time_col = 'Quarter'
+                
+                # Check Year (4-digit number)
+                elif extracted["filter_value"].isdigit() and len(extracted["filter_value"]) == 4:
+                    is_time_value = True
+                    time_col = 'Year'
+                
+                # Check Month
+                elif any(m in extracted["filter_value"].lower() for m in ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']):
+                    is_time_value = True
+                    time_col = 'Month'
+                
+                if is_time_value:
+                    # This is a time-based filter
                     query_params["query_type"] = "filter_and_sum"
-                    query_params["filter_column"] = correct_col
+                    query_params["filter_column"] = time_col
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
                 else:
-                    query_params["query_type"] = "filter_and_sum"
-                    query_params["filter_column"] = extracted["dimension"]
-                    query_params["filter_value"] = extracted["filter_value"]
-                    query_params["period_column"] = None
+                    # Regular dimension filter
+                    correct_col = find_correct_filter_column(data, extracted["filter_value"])
+                    
+                    if correct_col:
+                        query_params["query_type"] = "filter_and_sum"
+                        query_params["filter_column"] = correct_col
+                        query_params["filter_value"] = extracted["filter_value"]
+                        query_params["period_column"] = None
+                    else:
+                        query_params["query_type"] = "filter_and_sum"
+                        query_params["filter_column"] = extracted["dimension"]
+                        query_params["filter_value"] = extracted["filter_value"]
+                        query_params["period_column"] = None
             
             # Check if asking about "highest/lowest/best/worst"
             elif any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
