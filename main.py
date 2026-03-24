@@ -139,6 +139,31 @@ def normalize_filter_value(filter_value, filter_column, data):
     # Default: return as-is
     return filter_value
 
+def detect_time_period_value(question):
+    """Detect if question mentions a specific time period value (Q3, Jan, 2024, etc)"""
+    question_lower = question.lower()
+    
+    # Check for Q1, Q2, Q3, Q4
+    for i in range(1, 5):
+        if f'q{i}' in question_lower:
+            return f'Q{i}'
+    
+    # Check for months
+    months = ['january', 'february', 'march', 'april', 'may', 'june', 
+              'july', 'august', 'september', 'october', 'november', 'december',
+              'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    for month in months:
+        if month in question_lower:
+            return month
+    
+    # Check for years (4 digits)
+    import re
+    years = re.findall(r'\b(19|20)\d{2}\b', question)
+    if years:
+        return years[0]
+    
+    return None
+
 def detect_aggregation_function(question, value_col, category_col=None):
     """
     Smart detection that considers:
@@ -218,23 +243,24 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
 
 Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
 Available Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
-Available Time Columns: Year, Quarter, Month, Date
+Available Time Periods: Year, Quarter, Month, Date
+Available Quarter Values: 1, 2, 3, 4 (also Q1, Q2, Q3, Q4)
 
 QUESTION: {user_question}
 
 RULES:
 - METRIC: Which NUMBER column is being asked about?
-- DIMENSION: Which dimension to GROUP BY (Geo, Country, Product, etc)?
+- DIMENSION: Which dimension to GROUP BY or FILTER (Geo, Country, Product, etc)? ONLY use for non-time filters.
+- TIME_PERIOD: How to break down by time (Year, Quarter, Month)?
 - FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, Q3, Jan, etc)?
-- TIME_PERIOD: How to break down by time (Year, Month, Quarter)?
-- IMPORTANT: If a time value is mentioned (Q3, 2024, Jan), that goes in FILTER_VALUE and TIME_PERIOD, NOT in DIMENSION
+- Only set FILTER_VALUE if asking about a SPECIFIC geographic or product value, NOT time values like Q3 or 2024.
 
 RESPOND WITH EXACTLY 7 LINES:
 METRIC: [metric name or NONE]
 DIMENSION: [dimension name or NONE]
 TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
-FILTER_VALUE: [specific value mentioned or NONE]
-QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total OR time_filtered]
+FILTER_VALUE: [specific non-time value or NONE]
+QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
 REASONING: [one line]
 AI_CONFIDENCE: [high OR medium OR low]"""
     
@@ -253,7 +279,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "filter_value": None,
                 "query_pattern": None,
                 "reasoning": "Analysis",
-                "confidence": "medium"
+                "confidence": "medium",
+                "time_period_value": None
             }
             
             for line in lines:
@@ -288,6 +315,11 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
+            # Detect time period value (Q3, Jan, 2024, etc)
+            time_period_value = detect_time_period_value(user_question)
+            if time_period_value:
+                extracted["time_period_value"] = time_period_value
+            
             # Fix column names using smart matching
             if extracted["metric"]:
                 correct_metric = find_correct_column(data, extracted["metric"])
@@ -313,7 +345,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "filter_column": None,
                 "filter_value": None,
                 "reasoning": extracted["reasoning"],
-                "aggregation_function": None
+                "aggregation_function": None,
+                "time_period_value": extracted["time_period_value"]
             }
             
             # Detect aggregation function from question (pass category_col for context)
@@ -324,47 +357,28 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             # Determine query type and find filter column
             question_lower = user_question.lower()
             
-            # Check if this is a TIME-based filter query (Q3, Jan, 2024, etc)
-            if extracted["filter_value"]:
-                # First check if it's a time value
-                is_time_value = False
-                time_col = None
+            # Check if this is a time period filter (Q3, Jan, 2024) - convert to period grouping
+            if extracted["time_period_value"]:
+                # This is a time period value, not a dimension filter
+                query_params["query_type"] = "total_by_period"
+                query_params["period_column"] = extracted["time_period"]
+                query_params["filter_value"] = extracted["time_period_value"]
+                query_params["filter_column"] = extracted["time_period"]  # Temporary, will be used in execute
+            
+            # Check if this is a dimension filter query (North America, Product A, etc)
+            elif extracted["filter_value"]:
+                correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 
-                # Check Quarter
-                if extracted["filter_value"].lower().startswith('q') or extracted["filter_value"] in ['1', '2', '3', '4']:
-                    is_time_value = True
-                    time_col = 'Quarter'
-                
-                # Check Year (4-digit number)
-                elif extracted["filter_value"].isdigit() and len(extracted["filter_value"]) == 4:
-                    is_time_value = True
-                    time_col = 'Year'
-                
-                # Check Month
-                elif any(m in extracted["filter_value"].lower() for m in ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']):
-                    is_time_value = True
-                    time_col = 'Month'
-                
-                if is_time_value:
-                    # This is a time-based filter
+                if correct_col:
                     query_params["query_type"] = "filter_and_sum"
-                    query_params["filter_column"] = time_col
+                    query_params["filter_column"] = correct_col
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
                 else:
-                    # Regular dimension filter
-                    correct_col = find_correct_filter_column(data, extracted["filter_value"])
-                    
-                    if correct_col:
-                        query_params["query_type"] = "filter_and_sum"
-                        query_params["filter_column"] = correct_col
-                        query_params["filter_value"] = extracted["filter_value"]
-                        query_params["period_column"] = None
-                    else:
-                        query_params["query_type"] = "filter_and_sum"
-                        query_params["filter_column"] = extracted["dimension"]
-                        query_params["filter_value"] = extracted["filter_value"]
-                        query_params["period_column"] = None
+                    query_params["query_type"] = "filter_and_sum"
+                    query_params["filter_column"] = extracted["dimension"]
+                    query_params["filter_value"] = extracted["filter_value"]
+                    query_params["period_column"] = None
             
             # Check if asking about "highest/lowest/best/worst"
             elif any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
@@ -409,6 +423,7 @@ def execute_query(data, query_params):
         if query_type == "total_by_period":
             period_col = query_params.get("period_column")
             value_col = query_params.get("value_column")
+            filter_val = query_params.get("filter_value")
             
             if not period_col or not value_col:
                 return None, "Missing period or value column"
@@ -416,9 +431,18 @@ def execute_query(data, query_params):
             if period_col not in data.columns or value_col not in data.columns:
                 return None, f"Column not found. Looking for Period: '{period_col}', Value: '{value_col}'. Available: {list(data.columns)}"
             
-            result = data.groupby(period_col)[value_col].sum().reset_index()
-            result.columns = [period_col, f"Total {value_col}"]
-            return result, None
+            # If there's a filter value (time period specific), filter first then sum
+            if filter_val:
+                filtered = data[data[period_col].astype(str) == str(filter_val)]
+                if len(filtered) == 0:
+                    return None, f"No data found for {period_col}='{filter_val}'"
+                total = filtered[value_col].sum()
+                return pd.DataFrame({period_col: [filter_val], f"Total {value_col}": [total]}), None
+            else:
+                # Otherwise group by period and sum
+                result = data.groupby(period_col)[value_col].sum().reset_index()
+                result.columns = [period_col, f"Total {value_col}"]
+                return result, None
         
         elif query_type == "best_worst_by_category":
             category_col = query_params.get("category_column")
@@ -662,7 +686,8 @@ if uploaded_file:
                             "Category Column": query_params.get('category_column'),
                             "Value Column": query_params.get('value_column'),
                             "Filter Column": query_params.get('filter_column'),
-                            "Filter Value": query_params.get('filter_value')
+                            "Filter Value": query_params.get('filter_value'),
+                            "Time Period Value": query_params.get('time_period_value')
                         })
                         st.write(f"**Available columns in dataset:** {data.columns.tolist()}")
                 
