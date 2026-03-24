@@ -80,7 +80,7 @@ def find_correct_filter_column(data, filter_value):
     
     filter_value_lower = str(filter_value).lower().strip()
     
-    # Try exact match first, then partial match
+    # Try exact match first
     for col in DIMENSION_COLUMNS:
         if col in data.columns:
             for actual_value in data[col].dropna().unique():
@@ -98,30 +98,48 @@ def find_correct_filter_column(data, filter_value):
     
     return None
 
-def detect_aggregation_function(question):
-    """Detect what aggregation function the user wants based on keywords"""
+def detect_aggregation_function(question, value_col, category_col=None):
+    """
+    Smart detection that considers:
+    1. Explicit keywords (average, total, etc)
+    2. Column type (percentage vs financial)
+    3. Query context (comparison vs individual value)
+    """
     question_lower = question.lower()
+    col_type = get_column_type(value_col)
     
-    # Check for average/mean
+    # Check for explicit average request
     if any(word in question_lower for word in ['average', 'avg', 'mean']):
         return 'mean'
     
-    # Check for total/sum
+    # Check for explicit total request
     if any(word in question_lower for word in ['total', 'sum']):
         return 'sum'
-    
-    # Check for highest/max
-    if any(word in question_lower for word in ['highest', 'max', 'maximum']):
-        return 'max'
-    
-    # Check for lowest/min
-    if any(word in question_lower for word in ['lowest', 'min', 'minimum']):
-        return 'min'
     
     # Check for count
     if any(word in question_lower for word in ['count', 'how many']):
         return 'count'
     
+    # For highest/lowest, decide based on context
+    if any(word in question_lower for word in ['highest', 'max', 'maximum']):
+        # If grouping by category (e.g., "by product"), compare aggregates
+        if category_col and (' by ' in question_lower or 'which' in question_lower):
+            if col_type == 'percentage':
+                return 'mean'  # Highest average %
+            elif col_type == 'financial':
+                return 'sum'   # Highest total spend
+        return 'max'  # Otherwise use max (individual highest value)
+    
+    if any(word in question_lower for word in ['lowest', 'min', 'minimum']):
+        # If grouping by category (e.g., "by product"), compare aggregates
+        if category_col and (' by ' in question_lower or 'which' in question_lower):
+            if col_type == 'percentage':
+                return 'mean'  # Lowest average %
+            elif col_type == 'financial':
+                return 'sum'   # Lowest total spend
+        return 'min'  # Otherwise use min (individual lowest value)
+    
+    # Default: None (will use column type default)
     return None
 
 with st.sidebar:
@@ -256,8 +274,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "aggregation_function": None
             }
             
-            # Detect aggregation function from question
-            agg_func = detect_aggregation_function(user_question)
+            # Detect aggregation function from question (pass category_col for context)
+            agg_func = detect_aggregation_function(user_question, extracted["metric"], extracted["dimension"])
             if agg_func:
                 query_params["aggregation_function"] = agg_func
             
@@ -557,7 +575,7 @@ if uploaded_file:
                         st.write(f"**Your Question:** {user_question}")
                         st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
                         st.write(f"**Query Type:** `{query_params.get('query_type')}`")
-                        st.write(f"**Aggregation Function:** `{query_params.get('aggregation_function') or 'default'}`")
+                        st.write(f"**Aggregation Function:** `{query_params.get('aggregation_function') or 'default (based on column type)'}`")
                         st.write("**Columns to Use:**")
                         st.json({
                             "Period Column": query_params.get('period_column'),
