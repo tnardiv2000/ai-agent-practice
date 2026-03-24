@@ -70,7 +70,6 @@ def find_correct_column(data, col_name):
     # Partial match only as LAST RESORT (PRIORITY 4)
     for actual_col in data.columns:
         if col_name_lower in actual_col.lower() or actual_col.lower() in col_name_lower:
-            # But prefer exact substring matches
             if col_name_lower in actual_col.lower() and len(col_name_lower) > len(actual_col) / 2:
                 return actual_col
     
@@ -233,23 +232,26 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
     
     prompt = f"""TASK: Extract what the user is asking from a data question.
 
-Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%, Return_Rate_%
-Available Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
-Available Time Periods: Year, Quarter, Month, Date
+FINANCIAL METRICS (SUM them): Spend, Savings, Revenue, Profit, Marketing_Spend
+PERCENTAGE METRICS (AVERAGE them): KPI_%, Profit_Margin_%, Return_Rate_%, Employee_Engagement_%, Customer_Satisfaction_Score
+COUNT METRICS: Units_Sold
+TIME PERIODS: Year (2022, 2023, 2024), Quarter (1,2,3,4 or Q1-Q4), Month
+DIMENSIONS TO GROUP BY: Geo, Country, Sales_Rep, Customer, Category, Product
 
 QUESTION: {user_question}
 
 RULES:
-- METRIC: Which metric/number column is being asked about?
-- DIMENSION: Which dimension to GROUP BY (Geo, Country, Product, Sales_Rep, Customer, Category)? Only if asking "which X" or "by X".
-- TIME_PERIOD: Time breakdown (Year, Quarter, Month)?
-- FILTER_VALUE: Specific value (North America, Product A)? NOT time values.
+1. METRIC: Identify the EXACT metric column name from the lists above
+2. DIMENSION: Which dimension to GROUP BY? (only if "which X", "by X", or "compare X")
+3. TIME_PERIOD: Year, Quarter, or Month (only for TIME GROUPING, not filtering)
+4. FILTER_VALUE: Specific dimension value (e.g., "North America", "Product A") - NOT year/quarter/month
+5. If question mentions a year like "2024" or "in 2024", FILTER by Year=2024, don't use as TIME_PERIOD
 
 RESPOND WITH EXACTLY 7 LINES:
-METRIC: [metric name or NONE]
+METRIC: [exact metric name or NONE]
 DIMENSION: [dimension name or NONE]
-TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
-FILTER_VALUE: [specific non-time value or NONE]
+TIME_PERIOD: [Year OR Quarter OR Month OR NONE - ONLY if grouping by time]
+FILTER_VALUE: [specific value or NONE]
 QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
 REASONING: [one line]
 AI_CONFIDENCE: [high OR medium OR low]"""
@@ -299,7 +301,7 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
-            # Detect time period value
+            # Detect time period value (2024, Q3, Jan, etc)
             time_period_value = detect_time_period_value(user_question)
             if time_period_value:
                 extracted["time_period_value"] = time_period_value
@@ -340,14 +342,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             question_lower = user_question.lower()
             
-            # Time period filter
+            # PRIORITY 1: Time period filter (2024, Q3, Jan)
             if extracted["time_period_value"]:
                 query_params["query_type"] = "total_by_period"
-                query_params["period_column"] = extracted["time_period"]
+                query_params["period_column"] = extracted["time_period"] or "Year"
                 query_params["filter_value"] = extracted["time_period_value"]
-                query_params["filter_column"] = extracted["time_period"]
+                query_params["filter_column"] = extracted["time_period"] or "Year"
             
-            # Dimension filter
+            # PRIORITY 2: Dimension filter (North America, Product A, etc)
             elif extracted["filter_value"]:
                 correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 if correct_col:
@@ -356,13 +358,13 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
             
-            # Group by dimension
+            # PRIORITY 3: Group by dimension
             elif extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
                 query_params["period_column"] = None
             
-            # Default: time period
+            # PRIORITY 4: Default time period grouping
             else:
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
