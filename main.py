@@ -20,6 +20,8 @@ COUNT_COLUMNS = ['Units_Sold']
 DATE_COLUMNS = ['Date', 'Year', 'Quarter', 'Month']
 DIMENSION_COLUMNS = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Product']
 
+ALL_METRICS = FINANCIAL_COLUMNS + PERCENTAGE_COLUMNS + COUNT_COLUMNS
+
 def get_column_type(col_name):
     if col_name in FINANCIAL_COLUMNS:
         return 'financial'
@@ -230,29 +232,33 @@ def get_column_statistics(data, column):
 def ai_understand_query(user_question, data, timeout_seconds, temperature):
     """Use AI to understand what the user is asking"""
     
-    prompt = f"""TASK: Extract what the user is asking from a data question.
+    # Build exact metric list for the prompt
+    metrics_list = ", ".join(ALL_METRICS)
+    dimensions_list = ", ".join(DIMENSION_COLUMNS)
+    
+    prompt = f"""TASK: Extract EXACT column names from a data question. RETURN ONLY EXACT COLUMN NAMES.
 
-FINANCIAL METRICS (SUM them): Spend, Savings, Revenue, Profit, Marketing_Spend
-PERCENTAGE METRICS (AVERAGE them): KPI_%, Profit_Margin_%, Return_Rate_%, Employee_Engagement_%, Customer_Satisfaction_Score
-COUNT METRICS: Units_Sold
-TIME PERIODS: Year (2022, 2023, 2024), Quarter (1,2,3,4 or Q1-Q4), Month
-DIMENSIONS TO GROUP BY: Geo, Country, Sales_Rep, Customer, Category, Product
+FINANCIAL METRICS (sum): {', '.join(FINANCIAL_COLUMNS)}
+PERCENTAGE METRICS (average): {', '.join(PERCENTAGE_COLUMNS)}
+COUNT METRICS: {', '.join(COUNT_COLUMNS)}
+DIMENSIONS: {dimensions_list}
+TIME: Year, Quarter, Month
 
 QUESTION: {user_question}
 
 RULES:
-1. METRIC: Identify the EXACT metric column name from the lists above
-2. DIMENSION: Which dimension to GROUP BY? (only if "which X", "by X", or "compare X")
-3. TIME_PERIOD: Year, Quarter, or Month (only for TIME GROUPING, not filtering)
-4. FILTER_VALUE: Specific dimension value (e.g., "North America", "Product A") - NOT year/quarter/month
-5. If question mentions a year like "2024" or "in 2024", FILTER by Year=2024, don't use as TIME_PERIOD
+1. METRIC: Return EXACTLY ONE metric name from the lists above. Do NOT add words like "total" or "revenue". Return just the metric name.
+2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", or "compare". Return from: {dimensions_list}
+3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time (not filtering)
+4. FILTER_VALUE: Return a specific value like "2024", "Q3", "North America" - NOT a metric name
+5. If year (2024) is mentioned, set FILTER_VALUE="2024" and TIME_PERIOD="Year"
 
-RESPOND WITH EXACTLY 7 LINES:
-METRIC: [exact metric name or NONE]
-DIMENSION: [dimension name or NONE]
-TIME_PERIOD: [Year OR Quarter OR Month OR NONE - ONLY if grouping by time]
-FILTER_VALUE: [specific value or NONE]
-QUERY_PATTERN: [yearly_total OR category_comparison OR filtered_total]
+RESPOND EXACTLY 7 LINES (no extra text):
+METRIC: [exact name or NONE]
+DIMENSION: [exact name or NONE]
+TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
+FILTER_VALUE: [value or NONE]
+QUERY_PATTERN: [category_comparison OR filtered_total OR yearly_total]
 REASONING: [one line]
 AI_CONFIDENCE: [high OR medium OR low]"""
     
@@ -306,11 +312,27 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             if time_period_value:
                 extracted["time_period_value"] = time_period_value
             
-            # Fix column names with STRICT matching
+            # FIX: Validate and correct metric name
             if extracted["metric"]:
-                correct_metric = find_correct_column(data, extracted["metric"])
-                if correct_metric:
-                    extracted["metric"] = correct_metric
+                # First try exact match from our known metrics
+                metric_found = False
+                for valid_metric in ALL_METRICS:
+                    if extracted["metric"].lower() == valid_metric.lower():
+                        extracted["metric"] = valid_metric
+                        metric_found = True
+                        break
+                
+                # If not found, try fuzzy matching
+                if not metric_found:
+                    correct_metric = find_correct_column(data, extracted["metric"])
+                    if correct_metric:
+                        extracted["metric"] = correct_metric
+                    else:
+                        # Try to extract metric from question keywords
+                        for valid_metric in ALL_METRICS:
+                            if valid_metric.lower() in user_question.lower():
+                                extracted["metric"] = valid_metric
+                                break
             
             if extracted["dimension"]:
                 correct_dimension = find_correct_column(data, extracted["dimension"])
