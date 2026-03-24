@@ -45,32 +45,34 @@ def get_recommended_functions(col_name):
     return recommendations.get(col_type, recommendations['numeric'])
 
 def find_correct_column(data, col_name):
-    """Find the correct column name in data, handling typos and variations"""
+    """Find the correct column name in data - EXACT MATCH FIRST"""
     if not col_name:
         return None
     
-    # Exact match
+    # Exact match (PRIORITY 1)
     if col_name in data.columns:
         return col_name
     
     col_name_lower = col_name.lower()
     
-    # Try case-insensitive match
+    # Case-insensitive exact match (PRIORITY 2)
     for actual_col in data.columns:
         if actual_col.lower() == col_name_lower:
             return actual_col
     
-    # Try removing underscores/spaces
+    # Normalized match - remove underscores and spaces (PRIORITY 3)
     col_normalized = col_name_lower.replace('_', '').replace(' ', '')
     for actual_col in data.columns:
         actual_normalized = actual_col.lower().replace('_', '').replace(' ', '')
         if actual_normalized == col_normalized:
             return actual_col
     
-    # Try partial match
+    # Partial match only as LAST RESORT (PRIORITY 4)
     for actual_col in data.columns:
         if col_name_lower in actual_col.lower() or actual_col.lower() in col_name_lower:
-            return actual_col
+            # But prefer exact substring matches
+            if col_name_lower in actual_col.lower() and len(col_name_lower) > len(actual_col) / 2:
+                return actual_col
     
     return None
 
@@ -112,7 +114,7 @@ def normalize_filter_value(filter_value, filter_column, data):
     # Q1, Q2, Q3, Q4 → 1, 2, 3, 4 (for Quarter column)
     if filter_column.lower() == 'quarter':
         if filter_value_str.startswith('q'):
-            quarter_num = filter_value_str[1:]  # Remove 'Q'
+            quarter_num = filter_value_str[1:]
             if quarter_num in ['1', '2', '3', '4']:
                 return quarter_num
     
@@ -127,48 +129,37 @@ def normalize_filter_value(filter_value, filter_column, data):
     if filter_column.lower() == 'month':
         for abbr, variants in month_map.items():
             if filter_value_str.startswith(abbr):
-                # Try to find matching value in data
                 for variant in variants:
                     for actual_val in data[filter_column].dropna().unique():
                         if str(actual_val).lower() == variant:
                             return str(actual_val)
     
-    # Year - just ensure it's a string
+    # Year
     if filter_column.lower() == 'year':
         return str(filter_value)
     
-    # Default: return as-is
     return filter_value
 
 def detect_time_period_value(question):
-    """
-    Detect if question mentions a specific time period value (Q3, Jan, 2024, etc).
-    STRICT: Only match if it's a standalone word, not part of column names.
-    """
+    """Detect time period values using word tokenization"""
     question_lower = question.lower()
-    
-    # Split question into words to check individual tokens
     words = re.findall(r'\b\w+\b', question_lower)
     
-    # Check for Q1, Q2, Q3, Q4
     for word in words:
         if word in ['q1', 'q2', 'q3', 'q4']:
             return word.upper()
     
-    # Check for full month names (must be exact word match)
     full_months = ['january', 'february', 'march', 'april', 'may', 'june',
                    'july', 'august', 'september', 'october', 'november', 'december']
     for word in words:
         if word in full_months:
             return word.capitalize()
     
-    # Check for month abbreviations (STRICT: only 3-letter exact match)
     month_abbrs = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
     for word in words:
         if word in month_abbrs:
             return word.capitalize()
     
-    # Check for years (4 digits, standalone)
     for word in words:
         if re.match(r'^(19|20)\d{2}$', word):
             return word
@@ -176,47 +167,37 @@ def detect_time_period_value(question):
     return None
 
 def detect_aggregation_function(question, value_col, category_col=None):
-    """
-    Smart detection that considers:
-    1. Explicit keywords (average, total, etc)
-    2. Column type (percentage vs financial)
-    3. Query context (comparison vs individual value)
-    """
+    """Smart aggregation detection"""
     question_lower = question.lower()
     col_type = get_column_type(value_col)
     
-    # Check for explicit average request
+    # Explicit keywords
     if any(word in question_lower for word in ['average', 'avg', 'mean']):
         return 'mean'
     
-    # Check for explicit total request
     if any(word in question_lower for word in ['total', 'sum']):
         return 'sum'
     
-    # Check for count
     if any(word in question_lower for word in ['count', 'how many']):
         return 'count'
     
-    # For highest/lowest, decide based on context
+    # For highest/lowest with dimension (group by), use aggregate
     if any(word in question_lower for word in ['highest', 'max', 'maximum']):
-        # If grouping by category (e.g., "by product"), compare aggregates
-        if category_col and (' by ' in question_lower or 'which' in question_lower):
+        if category_col and (' by ' in question_lower or 'which' in question_lower or 'what' in question_lower):
             if col_type == 'percentage':
-                return 'mean'  # Highest average %
+                return 'mean'
             elif col_type == 'financial':
-                return 'sum'   # Highest total spend
-        return 'max'  # Otherwise use max (individual highest value)
+                return 'sum'
+        return 'max'
     
     if any(word in question_lower for word in ['lowest', 'min', 'minimum']):
-        # If grouping by category (e.g., "by product"), compare aggregates
-        if category_col and (' by ' in question_lower or 'which' in question_lower):
+        if category_col and (' by ' in question_lower or 'which' in question_lower or 'what' in question_lower):
             if col_type == 'percentage':
-                return 'mean'  # Lowest average %
+                return 'mean'
             elif col_type == 'financial':
-                return 'sum'   # Lowest total spend
-        return 'min'  # Otherwise use min (individual lowest value)
+                return 'sum'
+        return 'min'
     
-    # Default: None (will use column type default)
     return None
 
 with st.sidebar:
@@ -252,19 +233,17 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
     
     prompt = f"""TASK: Extract what the user is asking from a data question.
 
-Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%
+Available Metrics: Spend, Savings, Revenue, Profit, KPI_%, Profit_Margin_%, Units_Sold, Marketing_Spend, Customer_Satisfaction_Score, Employee_Engagement_%, Return_Rate_%, Return_Rate_%
 Available Dimensions: Geo, Country, Sales_Rep, Customer, Category, Product
 Available Time Periods: Year, Quarter, Month, Date
-Available Quarter Values: 1, 2, 3, 4 (also Q1, Q2, Q3, Q4)
 
 QUESTION: {user_question}
 
 RULES:
-- METRIC: Which NUMBER column is being asked about?
-- DIMENSION: Which dimension to GROUP BY or FILTER (Geo, Country, Product, etc)? ONLY use for non-time filters.
-- TIME_PERIOD: How to break down by time (Year, Quarter, Month)?
-- FILTER_VALUE: Any SPECIFIC value mentioned (North America, 2022, Q3, Jan, etc)?
-- Only set FILTER_VALUE if asking about a SPECIFIC geographic or product value, NOT time values like Q3 or 2024.
+- METRIC: Which metric/number column is being asked about?
+- DIMENSION: Which dimension to GROUP BY (Geo, Country, Product, Sales_Rep, Customer, Category)? Only if asking "which X" or "by X".
+- TIME_PERIOD: Time breakdown (Year, Quarter, Month)?
+- FILTER_VALUE: Specific value (North America, Product A)? NOT time values.
 
 RESPOND WITH EXACTLY 7 LINES:
 METRIC: [metric name or NONE]
@@ -299,39 +278,33 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
                         extracted["metric"] = val
-                
                 elif "DIMENSION:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
                         extracted["dimension"] = val
-                
                 elif "TIME_PERIOD:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
                         extracted["time_period"] = val
-                
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE":
                         extracted["filter_value"] = val
-                
                 elif "QUERY_PATTERN:" in line:
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["query_pattern"] = val
-                
                 elif "REASONING:" in line:
                     extracted["reasoning"] = line.split(":", 1)[1].strip()
-                
                 elif "AI_CONFIDENCE:" in line:
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
-            # Detect time period value (Q3, Jan, 2024, etc) - STRICT word matching only
+            # Detect time period value
             time_period_value = detect_time_period_value(user_question)
             if time_period_value:
                 extracted["time_period_value"] = time_period_value
             
-            # Fix column names using smart matching
+            # Fix column names with STRICT matching
             if extracted["metric"]:
                 correct_metric = find_correct_column(data, extracted["metric"])
                 if correct_metric:
@@ -360,55 +333,41 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "time_period_value": extracted["time_period_value"]
             }
             
-            # Detect aggregation function from question (pass category_col for context)
+            # Detect aggregation function
             agg_func = detect_aggregation_function(user_question, extracted["metric"], extracted["dimension"])
             if agg_func:
                 query_params["aggregation_function"] = agg_func
             
-            # Determine query type and find filter column
             question_lower = user_question.lower()
             
-            # Check if this is a time period filter (Q3, Jan, 2024) - convert to period grouping
+            # Time period filter
             if extracted["time_period_value"]:
-                # This is a time period value, not a dimension filter
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"]
                 query_params["filter_value"] = extracted["time_period_value"]
-                query_params["filter_column"] = extracted["time_period"]  # Temporary, will be used in execute
+                query_params["filter_column"] = extracted["time_period"]
             
-            # Check if this is a dimension filter query (North America, Product A, etc)
+            # Dimension filter
             elif extracted["filter_value"]:
                 correct_col = find_correct_filter_column(data, extracted["filter_value"])
-                
                 if correct_col:
                     query_params["query_type"] = "filter_and_sum"
                     query_params["filter_column"] = correct_col
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
-                else:
-                    query_params["query_type"] = "filter_and_sum"
-                    query_params["filter_column"] = extracted["dimension"]
-                    query_params["filter_value"] = extracted["filter_value"]
-                    query_params["period_column"] = None
             
-            # Check if asking about "highest/lowest/best/worst"
-            elif any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']):
+            # Group by dimension
+            elif extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
                 query_params["period_column"] = None
             
-            # Check if asking "by X" for grouping
-            elif " by " in question_lower and extracted["dimension"]:
-                query_params["query_type"] = "best_worst_by_category"
-                query_params["category_column"] = extracted["dimension"]
-                query_params["period_column"] = None
-            
-            # Otherwise use time period grouping
+            # Default: time period
             else:
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
             
-            # Normalize filter values to match data format
+            # Normalize filter values
             if query_params["filter_value"] and query_params["filter_column"]:
                 query_params["filter_value"] = normalize_filter_value(
                     query_params["filter_value"],
@@ -442,7 +401,6 @@ def execute_query(data, query_params):
             if period_col not in data.columns or value_col not in data.columns:
                 return None, f"Column not found. Looking for Period: '{period_col}', Value: '{value_col}'. Available: {list(data.columns)}"
             
-            # If there's a filter value (time period specific), filter first then sum
             if filter_val:
                 filtered = data[data[period_col].astype(str) == str(filter_val)]
                 if len(filtered) == 0:
@@ -450,7 +408,6 @@ def execute_query(data, query_params):
                 total = filtered[value_col].sum()
                 return pd.DataFrame({period_col: [filter_val], f"Total {value_col}": [total]}), None
             else:
-                # Otherwise group by period and sum
                 result = data.groupby(period_col)[value_col].sum().reset_index()
                 result.columns = [period_col, f"Total {value_col}"]
                 return result, None
@@ -512,7 +469,6 @@ def execute_query(data, query_params):
             if filter_col not in data.columns or value_col not in data.columns:
                 return None, f"Invalid columns. Filter: {filter_col}, Value: {value_col}. Available: {list(data.columns)}"
             
-            # Normalize filter value to match data format
             filter_val = normalize_filter_value(filter_val, filter_col, data)
             
             filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
