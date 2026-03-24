@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 import requests
 import json
+import re
 
 load_dotenv()
 
@@ -140,27 +141,37 @@ def normalize_filter_value(filter_value, filter_column, data):
     return filter_value
 
 def detect_time_period_value(question):
-    """Detect if question mentions a specific time period value (Q3, Jan, 2024, etc)"""
+    """
+    Detect if question mentions a specific time period value (Q3, Jan, 2024, etc).
+    STRICT: Only match if it's a standalone word, not part of column names.
+    """
     question_lower = question.lower()
     
+    # Split question into words to check individual tokens
+    words = re.findall(r'\b\w+\b', question_lower)
+    
     # Check for Q1, Q2, Q3, Q4
-    for i in range(1, 5):
-        if f'q{i}' in question_lower:
-            return f'Q{i}'
+    for word in words:
+        if word in ['q1', 'q2', 'q3', 'q4']:
+            return word.upper()
     
-    # Check for months
-    months = ['january', 'february', 'march', 'april', 'may', 'june', 
-              'july', 'august', 'september', 'october', 'november', 'december',
-              'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-    for month in months:
-        if month in question_lower:
-            return month
+    # Check for full month names (must be exact word match)
+    full_months = ['january', 'february', 'march', 'april', 'may', 'june',
+                   'july', 'august', 'september', 'october', 'november', 'december']
+    for word in words:
+        if word in full_months:
+            return word.capitalize()
     
-    # Check for years (4 digits)
-    import re
-    years = re.findall(r'\b(19|20)\d{2}\b', question)
-    if years:
-        return years[0]
+    # Check for month abbreviations (STRICT: only 3-letter exact match)
+    month_abbrs = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    for word in words:
+        if word in month_abbrs:
+            return word.capitalize()
+    
+    # Check for years (4 digits, standalone)
+    for word in words:
+        if re.match(r'^(19|20)\d{2}$', word):
+            return word
     
     return None
 
@@ -315,7 +326,7 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
-            # Detect time period value (Q3, Jan, 2024, etc)
+            # Detect time period value (Q3, Jan, 2024, etc) - STRICT word matching only
             time_period_value = detect_time_period_value(user_question)
             if time_period_value:
                 extracted["time_period_value"] = time_period_value
