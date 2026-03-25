@@ -22,15 +22,85 @@ DIMENSION_COLUMNS = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Pro
 
 ALL_METRICS = FINANCIAL_COLUMNS + PERCENTAGE_COLUMNS + COUNT_COLUMNS
 
-# DIMENSION SYNONYMS - Map user language to actual column names
+# HARDCODED FALLBACK SYNONYMS - Used when data columns don't match
+METRIC_SYNONYMS = {
+    'Spend': ['spend', 'spending', 'spent', 'cost', 'costs', 'expense', 'expenses'],
+    'Savings': ['savings', 'saved', 'save', 'money saved'],
+    'Revenue': ['revenue', 'sales', 'income', 'earned', 'total sales'],
+    'Profit': ['profit', 'earnings', 'net profit', 'bottom line'],
+    'Marketing_Spend': ['marketing spend', 'marketing_spend', 'marketing cost', 'ad spend', 'marketing budget'],
+    'KPI_%': ['kpi', 'kpi%', 'kpi_%', 'key performance indicator'],
+    'Profit_Margin_%': ['profit margin', 'profit_margin', 'profit margin%', 'gpm', 'gross profit margin', 'margin%', 'margin'],
+    'Return_Rate_%': ['return rate', 'return_rate', 'return rate%', 'returns', 'return%'],
+    'Employee_Engagement_%': ['employee engagement', 'employee_engagement', 'engagement%', 'engagement', 'employee%'],
+    'Customer_Satisfaction_Score': ['customer satisfaction', 'customer_satisfaction', 'satisfaction score', 'csat', 'satisfaction'],
+    'Units_Sold': ['units sold', 'units_sold', 'units', 'quantity', 'qty', 'items sold', 'volume'],
+}
+
 DIMENSION_SYNONYMS = {
     'Sales_Rep': ['sales rep', 'sdr', 'sales representative', 'sales_rep', 'salesman', 'saleswoman', 'account executive', 'rep'],
     'Country': ['country', 'nation', 'countries'],
     'Product': ['product', 'item', 'sku', 'products'],
     'Category': ['category', 'type', 'class', 'categories'],
     'Customer': ['customer', 'client', 'account', 'customers', 'clients'],
-    'Geo': ['geo', 'region', 'geography', 'location', 'geographic'],
+    'Geo': ['geo', 'region', 'geography', 'location', 'geographic', 'geography'],
 }
+
+def build_dynamic_synonyms(data):
+    """
+    Build synonyms dynamically from actual data columns.
+    This ensures it works with ANY dataset, not just hardcoded.
+    """
+    dynamic_synonyms = {
+        'metrics': {},
+        'dimensions': {}
+    }
+    
+    # For each column in the data, create synonyms from the column name
+    for col in data.columns:
+        col_lower = col.lower()
+        col_clean = col_lower.replace('_', ' ').replace('%', '').strip()
+        
+        # Generate variations
+        variations = set([
+            col_lower,  # Original lowercase
+            col_clean,  # Spaces instead of underscores
+            col.strip(),  # Original case
+        ])
+        
+        # Add common abbreviations based on column content
+        if 'sales_rep' in col_lower or 'sales rep' in col_clean:
+            variations.update(['sales rep', 'sdr', 'rep', 'sales representative'])
+        if 'units' in col_lower:
+            variations.update(['units', 'quantity', 'qty', 'volume', 'items'])
+        if 'profit_margin' in col_lower or 'margin' in col_clean:
+            variations.update(['margin', 'profit margin', 'gpm'])
+        if 'customer_satisfaction' in col_lower or 'satisfaction' in col_clean:
+            variations.update(['satisfaction', 'csat', 'customer satisfaction'])
+        if 'employee_engagement' in col_lower or 'engagement' in col_clean:
+            variations.update(['engagement', 'employee engagement'])
+        if 'return_rate' in col_lower or 'return' in col_clean:
+            variations.update(['return', 'returns', 'return rate'])
+        if 'marketing_spend' in col_lower:
+            variations.update(['marketing spend', 'ad spend', 'marketing budget'])
+        if 'spend' in col_lower and 'marketing' not in col_lower:
+            variations.update(['spend', 'spending', 'cost', 'expense'])
+        if 'revenue' in col_lower or 'sales' in col_clean:
+            variations.update(['revenue', 'sales', 'income'])
+        if 'profit' in col_lower and 'margin' not in col_lower:
+            variations.update(['profit', 'earnings'])
+        if 'savings' in col_lower:
+            variations.update(['savings', 'saved'])
+        if 'kpi' in col_lower:
+            variations.update(['kpi'])
+        
+        # Categorize as metric or dimension based on actual column lists
+        if col in ALL_METRICS:
+            dynamic_synonyms['metrics'][col] = list(variations)
+        elif col in DIMENSION_COLUMNS:
+            dynamic_synonyms['dimensions'][col] = list(variations)
+    
+    return dynamic_synonyms
 
 def get_column_type(col_name):
     if col_name in FINANCIAL_COLUMNS:
@@ -169,46 +239,50 @@ def pre_detect_time_period(question):
     """Detect which TIME PERIOD column is mentioned (Year, Quarter, Month)"""
     question_lower = question.lower()
     
-    # Check for Quarter mentions (Q1-Q4, quarter)
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
         return 'Quarter'
     
-    # Check for Month mentions
     if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
         return 'Month'
     
-    # Check for Year mentions or 4-digit year
     if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
         return 'Year'
     
     return None
 
-def pre_detect_dimension(question):
-    """Extract dimension keyword before AI gets it - with SYNONYM support"""
+def pre_detect_dimension_dynamic(question, dynamic_synonyms):
+    """Extract dimension using DYNAMIC synonyms from actual data"""
     question_lower = question.lower()
     
-    # Check for synonyms FIRST (higher priority)
+    # Check dynamic synonyms FIRST (from actual data)
+    for actual_dim, synonyms in dynamic_synonyms['dimensions'].items():
+        for synonym in synonyms:
+            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
+                return actual_dim
+    
+    # Fallback to hardcoded
     for actual_dim, synonyms in DIMENSION_SYNONYMS.items():
         for synonym in synonyms:
             if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
                 return actual_dim
     
-    # Fallback: check original DIMENSION_COLUMNS
-    for dim in DIMENSION_COLUMNS:
-        dim_lower = dim.lower()
-        if re.search(rf'\b{dim_lower}\b', question_lower):
-            return dim
-    
     return None
 
-def pre_detect_metric(question):
-    """Extract metric keyword before AI gets it"""
+def pre_detect_metric_dynamic(question, dynamic_synonyms):
+    """Extract metric using DYNAMIC synonyms from actual data"""
     question_lower = question.lower()
     
-    for metric in ALL_METRICS:
-        metric_lower = metric.lower()
-        if metric_lower in question_lower:
-            return metric
+    # Check dynamic synonyms FIRST (from actual data)
+    for actual_metric, synonyms in dynamic_synonyms['metrics'].items():
+        for synonym in synonyms:
+            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
+                return actual_metric
+    
+    # Fallback to hardcoded
+    for actual_metric, synonyms in METRIC_SYNONYMS.items():
+        for synonym in synonyms:
+            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
+                return actual_metric
     
     return None
 
@@ -217,13 +291,12 @@ def detect_aggregation_function(question, value_col, category_col=None):
     question_lower = question.lower()
     col_type = get_column_type(value_col)
     
-    # CRITICAL: If grouping by dimension + percentage column + lowest/highest = use MEAN
     if category_col:
         if any(word in question_lower for word in ['lowest', 'highest', 'best', 'worst', 'top']):
             if col_type == 'percentage':
-                return 'mean'  # Average % per category, then find lowest/highest
+                return 'mean'
             elif col_type == 'financial':
-                return 'sum'   # Total per category, then find lowest/highest
+                return 'sum'
     
     if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
         return 'mean'
@@ -233,6 +306,12 @@ def detect_aggregation_function(question, value_col, category_col=None):
     
     if any(word in question_lower for word in ['count', 'how many']):
         return 'count'
+    
+    if any(word in question_lower for word in ['minimum', 'min']):
+        return 'min'
+    
+    if any(word in question_lower for word in ['maximum', 'max']):
+        return 'max'
     
     return None
 
@@ -264,15 +343,15 @@ def get_column_statistics(data, column):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def ai_understand_query(user_question, data, timeout_seconds, temperature):
+def ai_understand_query(user_question, data, timeout_seconds, temperature, dynamic_synonyms):
     """Use AI to understand what the user is asking"""
     
     metrics_list = ", ".join(ALL_METRICS)
     dimensions_list = ", ".join(DIMENSION_COLUMNS)
     
-    # PRE-DETECT to prevent hallucinations
-    pre_metric = pre_detect_metric(user_question)
-    pre_dimension = pre_detect_dimension(user_question)
+    # PRE-DETECT using DYNAMIC synonyms
+    pre_metric = pre_detect_metric_dynamic(user_question, dynamic_synonyms)
+    pre_dimension = pre_detect_dimension_dynamic(user_question, dynamic_synonyms)
     pre_time_value = detect_time_period_value(user_question)
     pre_time_period = pre_detect_time_period(user_question)
     
@@ -375,7 +454,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 if correct_time:
                     extracted["time_period"] = correct_time
             
-            # Build query_params
             query_params = {
                 "query_type": "total_by_period",
                 "period_column": extracted["time_period"],
@@ -388,7 +466,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "time_period_value": extracted["time_period_value"]
             }
             
-            # Normalize filter value EARLY if it's a time value
             if extracted["time_period_value"] and extracted["time_period"]:
                 extracted["time_period_value"] = normalize_filter_value(
                     extracted["time_period_value"],
@@ -402,7 +479,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             question_lower = user_question.lower()
             
-            # PRIORITY 1: Group by dimension (which/highest/lowest/per)
             if extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'which', 'what', 'per ', ' by ']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
@@ -410,14 +486,12 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 query_params["filter_column"] = None
                 query_params["filter_value"] = None
             
-            # PRIORITY 2: Time period filter
             elif extracted["time_period_value"]:
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
                 query_params["filter_value"] = extracted["time_period_value"]
                 query_params["filter_column"] = extracted["time_period"] or "Year"
             
-            # PRIORITY 3: Dimension filter
             elif extracted["filter_value"]:
                 correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 if correct_col:
@@ -426,12 +500,10 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     query_params["filter_value"] = extracted["filter_value"]
                     query_params["period_column"] = None
             
-            # PRIORITY 4: Default time period grouping
             else:
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
             
-            # Normalize filter values (non-time)
             if query_params["filter_value"] and query_params["filter_column"] and query_params["query_type"] != "total_by_period":
                 query_params["filter_value"] = normalize_filter_value(
                     query_params["filter_value"],
@@ -567,6 +639,9 @@ if uploaded_file:
         else:
             data = pd.read_csv(temp_path)
         
+        # BUILD DYNAMIC SYNONYMS FROM ACTUAL DATA
+        dynamic_synonyms = build_dynamic_synonyms(data)
+        
         tab1, tab2, tab3 = st.tabs(["📊 Data Preview", "📈 Data Stats", "🔍 Detailed Info"])
         
         with tab1:
@@ -698,7 +773,7 @@ if uploaded_file:
             st.write("🤖 Processing your question...")
             
             with st.spinner("🧠 AI analyzing question..."):
-                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature)
+                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature, dynamic_synonyms)
             
             if ai_error:
                 st.error(f"❌ AI Error: {ai_error}")
