@@ -155,6 +155,24 @@ def detect_time_period_value(question):
     
     return None
 
+def pre_detect_time_period(question):
+    """Detect which TIME PERIOD column is mentioned (Year, Quarter, Month)"""
+    question_lower = question.lower()
+    
+    # Check for Quarter mentions (Q1-Q4, quarter)
+    if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
+        return 'Quarter'
+    
+    # Check for Month mentions
+    if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
+        return 'Month'
+    
+    # Check for Year mentions or 4-digit year
+    if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
+        return 'Year'
+    
+    return None
+
 def pre_detect_dimension(question):
     """Extract dimension keyword before AI gets it - with case handling"""
     question_lower = question.lower()
@@ -179,9 +197,17 @@ def pre_detect_metric(question):
     return None
 
 def detect_aggregation_function(question, value_col, category_col=None):
-    """Smart aggregation detection"""
+    """Smart aggregation detection - CRITICAL for group by queries"""
     question_lower = question.lower()
     col_type = get_column_type(value_col)
+    
+    # CRITICAL: If grouping by dimension + percentage column + lowest/highest = use MEAN
+    if category_col:
+        if any(word in question_lower for word in ['lowest', 'highest', 'best', 'worst', 'top']):
+            if col_type == 'percentage':
+                return 'mean'  # Average % per category, then find lowest/highest
+            elif col_type == 'financial':
+                return 'sum'   # Total per category, then find lowest/highest
     
     if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
         return 'mean'
@@ -191,22 +217,6 @@ def detect_aggregation_function(question, value_col, category_col=None):
     
     if any(word in question_lower for word in ['count', 'how many']):
         return 'count'
-    
-    if any(word in question_lower for word in ['highest', 'max', 'maximum']):
-        if category_col and (' by ' in question_lower or 'which' in question_lower or 'what' in question_lower):
-            if col_type == 'percentage':
-                return 'mean'
-            elif col_type == 'financial':
-                return 'sum'
-        return 'max'
-    
-    if any(word in question_lower for word in ['lowest', 'min', 'minimum']):
-        if category_col and (' by ' in question_lower or 'which' in question_lower or 'what' in question_lower):
-            if col_type == 'percentage':
-                return 'mean'
-            elif col_type == 'financial':
-                return 'sum'
-        return 'min'
     
     return None
 
@@ -248,6 +258,7 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
     pre_metric = pre_detect_metric(user_question)
     pre_dimension = pre_detect_dimension(user_question)
     pre_time_value = detect_time_period_value(user_question)
+    pre_time_period = pre_detect_time_period(user_question)
     
     prompt = f"""TASK: Extract EXACT column names from a data question. RETURN ONLY EXACT COLUMN NAMES.
 
@@ -260,13 +271,14 @@ TIME: Year, Quarter, Month
 QUESTION: {user_question}
 
 RULES:
-1. METRIC: Return EXACTLY ONE metric name. Do NOT add words. Return just the metric name.
+1. METRIC: Return EXACTLY ONE metric name. Return just the metric name.
    HINT: The question likely mentions: {pre_metric or 'unknown metric'}
 2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", "per X", or "compare".
    HINT: The question likely mentions: {pre_dimension or 'no dimension'}
-3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time
+3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time OR filtering by time
+   HINT: Time column likely is: {pre_time_period or 'none detected'}
 4. FILTER_VALUE: Return a specific value - ONLY if explicitly mentioned
-   Time mentions in question: {pre_time_value or 'none detected'}
+   Time value in question: {pre_time_value or 'none detected'}
 5. NEVER add values or dimensions that aren't explicitly in the question
 
 RESPOND EXACTLY 7 LINES (no extra text):
@@ -289,7 +301,7 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             extracted = {
                 "metric": pre_metric,
                 "dimension": pre_dimension,
-                "time_period": None,
+                "time_period": pre_time_period,  # Use pre-detected time period
                 "filter_value": None,
                 "query_pattern": None,
                 "reasoning": "Analysis",
@@ -360,6 +372,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 "time_period_value": extracted["time_period_value"]
             }
             
+            # Normalize filter value EARLY if it's a time value
+            if extracted["time_period_value"] and extracted["time_period"]:
+                extracted["time_period_value"] = normalize_filter_value(
+                    extracted["time_period_value"],
+                    extracted["time_period"],
+                    data
+                )
+            
             agg_func = detect_aggregation_function(user_question, extracted["metric"], extracted["dimension"])
             if agg_func:
                 query_params["aggregation_function"] = agg_func
@@ -395,8 +415,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
             
-            # Normalize filter values
-            if query_params["filter_value"] and query_params["filter_column"]:
+            # Normalize filter values (non-time)
+            if query_params["filter_value"] and query_params["filter_column"] and query_params["query_type"] != "total_by_period":
                 query_params["filter_value"] = normalize_filter_value(
                     query_params["filter_value"],
                     query_params["filter_column"],
