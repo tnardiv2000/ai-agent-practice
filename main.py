@@ -97,9 +97,7 @@ def find_correct_filter_column(data, filter_value):
     return None
 
 def normalize_filter_value(filter_value, filter_column, data):
-    """
-    Normalize filter values to match actual data format.
-    """
+    """Normalize filter values to match actual data format."""
     if not filter_value or not filter_column:
         return filter_value
     
@@ -132,35 +130,50 @@ def normalize_filter_value(filter_value, filter_column, data):
     return filter_value
 
 def detect_time_period_value(question):
-    """
-    Detect time period values ONLY from the CURRENT question.
-    STRICT: Only match if explicitly mentioned in question.
-    """
+    """Detect time period values ONLY from the CURRENT question."""
     question_lower = question.lower()
     words = re.findall(r'\b\w+\b', question_lower)
     
-    # Q1, Q2, Q3, Q4
     for word in words:
         if word in ['q1', 'q2', 'q3', 'q4']:
             return word.upper()
     
-    # Full month names
     full_months = ['january', 'february', 'march', 'april', 'may', 'june',
                    'july', 'august', 'september', 'october', 'november', 'december']
     for word in words:
         if word in full_months:
             return word.capitalize()
     
-    # Month abbreviations
     month_abbrs = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
     for word in words:
         if word in month_abbrs:
             return word.capitalize()
     
-    # Years - ONLY if explicitly in question
     for word in words:
         if re.match(r'^(19|20)\d{2}$', word):
             return word
+    
+    return None
+
+def pre_detect_dimension(question):
+    """Extract dimension keyword before AI gets it"""
+    question_lower = question.lower()
+    
+    for dim in DIMENSION_COLUMNS:
+        dim_lower = dim.lower()
+        if re.search(rf'\b{dim_lower}\b', question_lower):
+            return dim
+    
+    return None
+
+def pre_detect_metric(question):
+    """Extract metric keyword before AI gets it"""
+    question_lower = question.lower()
+    
+    for metric in ALL_METRICS:
+        metric_lower = metric.lower()
+        if metric_lower in question_lower:
+            return metric
     
     return None
 
@@ -230,6 +243,11 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature):
     metrics_list = ", ".join(ALL_METRICS)
     dimensions_list = ", ".join(DIMENSION_COLUMNS)
     
+    # PRE-DETECT to prevent hallucinations
+    pre_metric = pre_detect_metric(user_question)
+    pre_dimension = pre_detect_dimension(user_question)
+    pre_time_value = detect_time_period_value(user_question)
+    
     prompt = f"""TASK: Extract EXACT column names from a data question. RETURN ONLY EXACT COLUMN NAMES.
 
 FINANCIAL METRICS (sum): {', '.join(FINANCIAL_COLUMNS)}
@@ -241,11 +259,14 @@ TIME: Year, Quarter, Month
 QUESTION: {user_question}
 
 RULES:
-1. METRIC: Return EXACTLY ONE metric name from the lists above. Do NOT add words like "total" or "revenue". Return just the metric name.
-2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", or "compare". Return from: {dimensions_list}
-3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time (not filtering)
-4. FILTER_VALUE: Return a specific value like "2024", "Q3", "North America" - NOT a metric name. ONLY if explicitly mentioned in the question
-5. NEVER add years that aren't mentioned. If the question says "highest KPI_%", do NOT add "2024"
+1. METRIC: Return EXACTLY ONE metric name. Do NOT add words. Return just the metric name.
+   HINT: The question likely mentions: {pre_metric or 'unknown metric'}
+2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", or "compare".
+   HINT: The question likely mentions: {pre_dimension or 'no dimension'}
+3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time
+4. FILTER_VALUE: Return a specific value - ONLY if explicitly mentioned
+   Time mentions in question: {pre_time_value or 'none detected'}
+5. NEVER add values or dimensions that aren't explicitly in the question
 
 RESPOND EXACTLY 7 LINES (no extra text):
 METRIC: [exact name or NONE]
@@ -265,32 +286,32 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             lines = ai_response.split('\n')
             extracted = {
-                "metric": None,
-                "dimension": None,
+                "metric": pre_metric,  # Use pre-detected metric as fallback
+                "dimension": pre_dimension,  # Use pre-detected dimension as fallback
                 "time_period": None,
                 "filter_value": None,
                 "query_pattern": None,
                 "reasoning": "Analysis",
                 "confidence": "medium",
-                "time_period_value": None
+                "time_period_value": pre_time_value
             }
             
             for line in lines:
                 if "METRIC:" in line:
                     val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE":
+                    if val.upper() != "NONE" and val.strip():
                         extracted["metric"] = val
                 elif "DIMENSION:" in line:
                     val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE":
+                    if val.upper() != "NONE" and val.strip():
                         extracted["dimension"] = val
                 elif "TIME_PERIOD:" in line:
                     val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE":
+                    if val.upper() != "NONE" and val.strip():
                         extracted["time_period"] = val
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE":
+                    if val.upper() != "NONE" and val.strip():
                         extracted["filter_value"] = val
                 elif "QUERY_PATTERN:" in line:
                     val = line.split(":", 1)[1].strip().lower()
@@ -300,11 +321,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 elif "AI_CONFIDENCE:" in line:
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
-            
-            # Detect time period value ONLY if explicitly in the question
-            time_period_value = detect_time_period_value(user_question)
-            if time_period_value:
-                extracted["time_period_value"] = time_period_value
             
             # Validate metric
             if extracted["metric"]:
@@ -319,11 +335,6 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     correct_metric = find_correct_column(data, extracted["metric"])
                     if correct_metric:
                         extracted["metric"] = correct_metric
-                    else:
-                        for valid_metric in ALL_METRICS:
-                            if valid_metric.lower() in user_question.lower():
-                                extracted["metric"] = valid_metric
-                                break
             
             if extracted["dimension"]:
                 correct_dimension = find_correct_column(data, extracted["dimension"])
@@ -354,7 +365,7 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             question_lower = user_question.lower()
             
-            # PRIORITY 1: Group by dimension (highest/lowest/which X)
+            # PRIORITY 1: Group by dimension (which/highest/lowest)
             if extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'which', 'what']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
@@ -362,14 +373,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                 query_params["filter_column"] = None
                 query_params["filter_value"] = None
             
-            # PRIORITY 2: Time period filter (2024, Q3, Jan)
+            # PRIORITY 2: Time period filter
             elif extracted["time_period_value"]:
                 query_params["query_type"] = "total_by_period"
                 query_params["period_column"] = extracted["time_period"] or "Year"
                 query_params["filter_value"] = extracted["time_period_value"]
                 query_params["filter_column"] = extracted["time_period"] or "Year"
             
-            # PRIORITY 3: Dimension filter (North America, Product A, etc)
+            # PRIORITY 3: Dimension filter
             elif extracted["filter_value"]:
                 correct_col = find_correct_filter_column(data, extracted["filter_value"])
                 if correct_col:
