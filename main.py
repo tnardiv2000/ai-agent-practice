@@ -14,6 +14,7 @@ st.write("Smart data analysis with AI understanding + 100% accurate Python calcu
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
+# STATIC LISTS (for reference, but dynamic detection is primary)
 FINANCIAL_COLUMNS = ['Spend', 'Savings', 'Revenue', 'Profit', 'Marketing_Spend']
 PERCENTAGE_COLUMNS = ['KPI_%', 'Profit_Margin_%', 'Return_Rate_%', 'Employee_Engagement_%', 'Customer_Satisfaction_Score']
 COUNT_COLUMNS = ['Units_Sold']
@@ -22,195 +23,204 @@ DIMENSION_COLUMNS = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Pro
 
 ALL_METRICS = FINANCIAL_COLUMNS + PERCENTAGE_COLUMNS + COUNT_COLUMNS
 
-# HARDCODED FALLBACK SYNONYMS - Used when data columns don't match
-METRIC_SYNONYMS = {
-    'Spend': ['spend', 'spending', 'spent', 'cost', 'costs', 'expense', 'expenses'],
-    'Savings': ['savings', 'saved', 'save', 'money saved'],
-    'Revenue': ['revenue', 'sales', 'income', 'earned', 'total sales'],
-    'Profit': ['profit', 'earnings', 'net profit', 'bottom line'],
-    'Marketing_Spend': ['marketing spend', 'marketing_spend', 'marketing cost', 'ad spend', 'marketing budget'],
-    'KPI_%': ['kpi', 'kpi%', 'kpi_%', 'key performance indicator'],
-    'Profit_Margin_%': ['profit margin', 'profit_margin', 'profit margin%', 'gpm', 'gross profit margin', 'margin%', 'margin'],
-    'Return_Rate_%': ['return rate', 'return_rate', 'return rate%', 'returns', 'return%'],
-    'Employee_Engagement_%': ['employee engagement', 'employee_engagement', 'engagement%', 'engagement', 'employee%'],
-    'Customer_Satisfaction_Score': ['customer satisfaction', 'customer_satisfaction', 'satisfaction score', 'csat', 'satisfaction'],
-    'Units_Sold': ['units sold', 'units_sold', 'units', 'quantity', 'qty', 'items sold', 'volume'],
-}
-
-DIMENSION_SYNONYMS = {
-    'Sales_Rep': ['sales rep', 'sdr', 'sales representative', 'sales_rep', 'salesman', 'saleswoman', 'account executive', 'rep'],
-    'Country': ['country', 'nation', 'countries'],
-    'Product': ['product', 'item', 'sku', 'products'],
-    'Category': ['category', 'type', 'class', 'categories'],
-    'Customer': ['customer', 'client', 'account', 'customers', 'clients'],
-    'Geo': ['geo', 'region', 'geography', 'location', 'geographic', 'geography'],
-}
-
-def build_dynamic_synonyms(data):
+def profile_columns(data):
     """
-    Build synonyms dynamically from actual data columns.
-    This ensures it works with ANY dataset, not just hardcoded.
+    Intelligently profile columns to determine their type and purpose.
+    Works with ANY dataset regardless of domain.
     """
-    dynamic_synonyms = {
-        'metrics': {},
-        'dimensions': {}
-    }
+    column_profiles = {}
     
-    # For each column in the data, create synonyms from the column name
     for col in data.columns:
         col_lower = col.lower()
-        col_clean = col_lower.replace('_', ' ').replace('%', '').strip()
+        dtype = data[col].dtype
         
-        # Generate variations
-        variations = set([
-            col_lower,  # Original lowercase
-            col_clean,  # Spaces instead of underscores
-            col.strip(),  # Original case
-        ])
+        profile = {
+            'name': col,
+            'dtype': str(dtype),
+            'null_count': int(data[col].isnull().sum()),
+            'unique_count': int(data[col].nunique()),
+            'inferred_type': None,  # 'metric', 'dimension', 'time', 'unknown'
+            'synonyms': [col_lower, col],
+        }
         
-        # Add common abbreviations based on column content
-        if 'sales_rep' in col_lower or 'sales rep' in col_clean:
-            variations.update(['sales rep', 'sdr', 'rep', 'sales representative'])
-        if 'units' in col_lower:
-            variations.update(['units', 'quantity', 'qty', 'volume', 'items'])
-        if 'profit_margin' in col_lower or 'margin' in col_clean:
-            variations.update(['margin', 'profit margin', 'gpm'])
-        if 'customer_satisfaction' in col_lower or 'satisfaction' in col_clean:
-            variations.update(['satisfaction', 'csat', 'customer satisfaction'])
-        if 'employee_engagement' in col_lower or 'engagement' in col_clean:
-            variations.update(['engagement', 'employee engagement'])
-        if 'return_rate' in col_lower or 'return' in col_clean:
-            variations.update(['return', 'returns', 'return rate'])
-        if 'marketing_spend' in col_lower:
-            variations.update(['marketing spend', 'ad spend', 'marketing budget'])
-        if 'spend' in col_lower and 'marketing' not in col_lower:
-            variations.update(['spend', 'spending', 'cost', 'expense'])
-        if 'revenue' in col_lower or 'sales' in col_clean:
-            variations.update(['revenue', 'sales', 'income'])
-        if 'profit' in col_lower and 'margin' not in col_lower:
-            variations.update(['profit', 'earnings'])
-        if 'savings' in col_lower:
-            variations.update(['savings', 'saved'])
-        if 'kpi' in col_lower:
-            variations.update(['kpi'])
+        # NUMERIC ANALYSIS
+        if dtype in ['int64', 'float64']:
+            profile['numeric'] = True
+            profile['min'] = float(data[col].min()) if not data[col].isnull().all() else None
+            profile['max'] = float(data[col].max()) if not data[col].isnull().all() else None
+            profile['mean'] = float(data[col].mean()) if not data[col].isnull().all() else None
+            profile['std'] = float(data[col].std()) if not data[col].isnull().all() else None
+            
+            # Is it a percentage?
+            if profile['max'] and profile['min'] is not None:
+                if profile['max'] <= 100 and profile['min'] >= 0 and '%' in col_lower:
+                    profile['inferred_type'] = 'metric_percentage'
+                    profile['synonyms'].extend(['percentage', 'percent', 'pct', '%'])
+            
+            # Is it a count/quantity?
+            if any(word in col_lower for word in ['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number']):
+                profile['inferred_type'] = 'metric_count'
+                profile['synonyms'].extend(['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number'])
+            
+            # Is it a financial metric?
+            elif any(word in col_lower for word in ['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'price', 'amount', 'value', 'fees', 'budget']):
+                profile['inferred_type'] = 'metric_financial'
+                profile['synonyms'].extend(['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'amount', 'value', 'fees', 'budget'])
+            
+            # Default: assume it's a metric
+            else:
+                profile['inferred_type'] = 'metric'
+                profile['synonyms'].extend(['value', 'amount', 'total', 'sum', 'metric'])
         
-        # Categorize as metric or dimension based on actual column lists
-        if col in ALL_METRICS:
-            dynamic_synonyms['metrics'][col] = list(variations)
-        elif col in DIMENSION_COLUMNS:
-            dynamic_synonyms['dimensions'][col] = list(variations)
+        # STRING/CATEGORY ANALYSIS
+        else:
+            profile['numeric'] = False
+            cardinality = profile['unique_count']
+            total_rows = len(data)
+            cardinality_ratio = cardinality / total_rows if total_rows > 0 else 0
+            
+            # High cardinality strings (likely ID, name, or description)
+            if cardinality_ratio > 0.5:
+                profile['inferred_type'] = 'id_or_name'
+                profile['synonyms'].extend(['name', 'id', 'identifier', 'description', 'title'])
+            
+            # Low cardinality strings (likely a category/dimension)
+            elif cardinality <= 100:
+                profile['inferred_type'] = 'dimension'
+                profile['synonyms'].extend(['category', 'type', 'group', 'classification', 'segment'])
+                
+                # Add domain-specific synonyms based on column content
+                if any(word in col_lower for word in ['region', 'geo', 'location', 'country', 'state', 'area', 'territory']):
+                    profile['synonyms'].extend(['region', 'geo', 'location', 'country', 'state', 'area', 'territory'])
+                if any(word in col_lower for word in ['product', 'item', 'sku', 'brand', 'line']):
+                    profile['synonyms'].extend(['product', 'item', 'sku', 'brand', 'line'])
+                if any(word in col_lower for word in ['customer', 'client', 'account', 'company', 'business', 'organization']):
+                    profile['synonyms'].extend(['customer', 'client', 'account', 'company', 'business', 'organization'])
+                if any(word in col_lower for word in ['sales_rep', 'sales rep', 'rep', 'salesman', 'agent', 'representative', 'employee', 'staff']):
+                    profile['synonyms'].extend(['sales_rep', 'sales rep', 'rep', 'salesman', 'agent', 'representative', 'employee', 'staff'])
+                if any(word in col_lower for word in ['category', 'type', 'class', 'segment', 'department']):
+                    profile['synonyms'].extend(['category', 'type', 'class', 'segment', 'department'])
+                if any(word in col_lower for word in ['sport', 'team', 'player', 'league', 'season']):
+                    profile['synonyms'].extend(['sport', 'team', 'player', 'league', 'season'])
+                if any(word in col_lower for word in ['crop', 'farm', 'field', 'harvest', 'soil', 'yield']):
+                    profile['synonyms'].extend(['crop', 'farm', 'field', 'harvest', 'soil', 'yield'])
+                if any(word in col_lower for word in ['vehicle', 'car', 'truck', 'model', 'brand', 'manufacturer']):
+                    profile['synonyms'].extend(['vehicle', 'car', 'truck', 'model', 'brand', 'manufacturer'])
+            
+            # Time columns
+            if any(word in col_lower for word in ['date', 'time', 'year', 'month', 'quarter', 'week', 'day', 'timestamp']):
+                profile['inferred_type'] = 'time'
+                profile['synonyms'].extend(['date', 'time', 'year', 'month', 'quarter', 'week', 'day', 'timestamp'])
+                
+                # Try to parse as date
+                try:
+                    pd.to_datetime(data[col])
+                    profile['is_date'] = True
+                except:
+                    profile['is_date'] = False
+        
+        column_profiles[col] = profile
     
-    return dynamic_synonyms
+    return column_profiles
 
-def get_column_type(col_name):
-    if col_name in FINANCIAL_COLUMNS:
-        return 'financial'
-    elif col_name in PERCENTAGE_COLUMNS:
-        return 'percentage'
-    elif col_name in COUNT_COLUMNS:
-        return 'count'
-    elif col_name in DATE_COLUMNS:
-        return 'date'
-    elif col_name in DIMENSION_COLUMNS:
-        return 'dimension'
-    else:
-        return 'numeric'
-
-def get_recommended_functions(col_name):
-    col_type = get_column_type(col_name)
-    recommendations = {
-        'financial': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'max': 'Highest (MAX)', 'min': 'Lowest (MIN)', 'mean': 'Average (MEAN)', 'count': 'Count'}},
-        'percentage': {'default': 'mean', 'options': {'mean': 'Average % (MEAN)', 'max': 'Highest % (MAX)', 'min': 'Lowest % (MIN)', 'count': 'Count'}},
-        'count': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)', 'count': 'Count'}},
-        'numeric': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)', 'count': 'Count'}}
-    }
-    return recommendations.get(col_type, recommendations['numeric'])
-
-def find_correct_column(data, col_name):
-    """Find the correct column name in data - EXACT MATCH FIRST"""
-    if not col_name:
-        return None
-    
-    if col_name in data.columns:
-        return col_name
-    
-    col_name_lower = col_name.lower()
-    
-    for actual_col in data.columns:
-        if actual_col.lower() == col_name_lower:
-            return actual_col
-    
-    col_normalized = col_name_lower.replace('_', '').replace(' ', '')
-    for actual_col in data.columns:
-        actual_normalized = actual_col.lower().replace('_', '').replace(' ', '')
-        if actual_normalized == col_normalized:
-            return actual_col
-    
-    for actual_col in data.columns:
-        if col_name_lower in actual_col.lower() or actual_col.lower() in col_name_lower:
-            if col_name_lower in actual_col.lower() and len(col_name_lower) > len(actual_col) / 2:
-                return actual_col
-    
-    return None
-
-def find_correct_filter_column(data, filter_value):
-    """Search ALL dimension columns to find which one contains this value"""
-    if not filter_value:
-        return None
-    
-    filter_value_lower = str(filter_value).lower().strip()
-    
-    for col in DIMENSION_COLUMNS:
-        if col in data.columns:
-            for actual_value in data[col].dropna().unique():
-                actual_value_lower = str(actual_value).lower().strip()
-                if actual_value_lower == filter_value_lower:
-                    return col
-    
-    for col in DIMENSION_COLUMNS:
-        if col in data.columns:
-            for actual_value in data[col].dropna().unique():
-                actual_value_lower = str(actual_value).lower().strip()
-                if filter_value_lower in actual_value_lower or actual_value_lower in filter_value_lower:
-                    return col
-    
-    return None
-
-def normalize_filter_value(filter_value, filter_column, data):
-    """Normalize filter values to match actual data format."""
-    if not filter_value or not filter_column:
-        return filter_value
-    
-    filter_value_str = str(filter_value).lower().strip()
-    
-    if filter_column.lower() == 'quarter':
-        if filter_value_str.startswith('q'):
-            quarter_num = filter_value_str[1:]
-            if quarter_num in ['1', '2', '3', '4']:
-                return quarter_num
-    
-    month_map = {
-        'jan': ['1', 'january'], 'feb': ['2', 'february'], 'mar': ['3', 'march'],
-        'apr': ['4', 'april'], 'may': ['5'], 'jun': ['6', 'june'],
-        'jul': ['7', 'july'], 'aug': ['8', 'august'], 'sep': ['9', 'september'],
-        'oct': ['10', 'october'], 'nov': ['11', 'november'], 'dec': ['12', 'december']
+def categorize_columns(column_profiles):
+    """
+    Categorize profiled columns into buckets.
+    Returns organized dict for easy querying.
+    """
+    categorized = {
+        'metrics': {},
+        'dimensions': {},
+        'time': {},
+        'ids': {},
+        'unknown': {}
     }
     
-    if filter_column.lower() == 'month':
-        for abbr, variants in month_map.items():
-            if filter_value_str.startswith(abbr):
-                for variant in variants:
-                    for actual_val in data[filter_column].dropna().unique():
-                        if str(actual_val).lower() == variant:
-                            return str(actual_val)
+    for col, profile in column_profiles.items():
+        inferred = profile['inferred_type']
+        
+        if inferred and 'metric' in inferred:
+            categorized['metrics'][col] = profile
+        elif inferred == 'dimension':
+            categorized['dimensions'][col] = profile
+        elif inferred == 'time':
+            categorized['time'][col] = profile
+        elif inferred == 'id_or_name':
+            categorized['ids'][col] = profile
+        else:
+            categorized['unknown'][col] = profile
     
-    if filter_column.lower() == 'year':
-        return str(filter_value)
+    return categorized
+
+def find_best_metric(question, categorized_columns):
+    """Smart metric detection that works across domains."""
+    if not categorized_columns['metrics']:
+        return None
     
-    return filter_value
+    question_lower = question.lower()
+    best_match = None
+    best_score = 0
+    
+    for col, profile in categorized_columns['metrics'].items():
+        for synonym in profile['synonyms']:
+            if synonym in question_lower:
+                score = len(synonym)
+                if score > best_score:
+                    best_score = score
+                    best_match = col
+    
+    return best_match
+
+def find_best_dimension(question, categorized_columns):
+    """Smart dimension detection that works across domains."""
+    if not categorized_columns['dimensions']:
+        return None
+    
+    question_lower = question.lower()
+    best_match = None
+    best_score = 0
+    
+    for col, profile in categorized_columns['dimensions'].items():
+        for synonym in profile['synonyms']:
+            if synonym in question_lower:
+                score = len(synonym)
+                if score > best_score:
+                    best_score = score
+                    best_match = col
+    
+    return best_match
+
+def find_best_time_column(question, categorized_columns):
+    """Smart time column detection."""
+    if not categorized_columns['time']:
+        return None
+    
+    question_lower = question.lower()
+    
+    # Check for specific time mentions
+    if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
+        for col in categorized_columns['time'].keys():
+            if 'quarter' in col.lower():
+                return col
+    
+    if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
+        for col in categorized_columns['time'].keys():
+            if 'month' in col.lower():
+                return col
+    
+    if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
+        for col in categorized_columns['time'].keys():
+            if 'year' in col.lower():
+                return col
+    
+    # Default to first time column
+    if categorized_columns['time']:
+        return list(categorized_columns['time'].keys())[0]
+    
+    return None
 
 def detect_time_period_value(question):
-    """Detect time period values ONLY from the CURRENT question."""
+    """Detect time period values from question."""
     question_lower = question.lower()
     words = re.findall(r'\b\w+\b', question_lower)
     
@@ -235,59 +245,110 @@ def detect_time_period_value(question):
     
     return None
 
-def pre_detect_time_period(question):
-    """Detect which TIME PERIOD column is mentioned (Year, Quarter, Month)"""
-    question_lower = question.lower()
+def get_column_type(col_name):
+    """Determine column type for aggregation defaults."""
+    col_lower = col_name.lower()
     
-    if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
-        return 'Quarter'
+    if any(word in col_lower for word in ['spend', 'cost', 'revenue', 'sales', 'profit', 'income']):
+        return 'financial'
+    elif '%' in col_lower or any(word in col_lower for word in ['rate', 'percentage', 'percent']):
+        return 'percentage'
+    elif any(word in col_lower for word in ['count', 'units', 'quantity', 'qty']):
+        return 'count'
+    elif any(word in col_lower for word in ['date', 'time', 'year', 'month', 'quarter']):
+        return 'date'
+    else:
+        return 'numeric'
+
+def get_recommended_functions(col_name):
+    """Get recommended aggregation functions."""
+    col_type = get_column_type(col_name)
+    recommendations = {
+        'financial': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'max': 'Highest (MAX)', 'min': 'Lowest (MIN)', 'mean': 'Average (MEAN)', 'count': 'Count'}},
+        'percentage': {'default': 'mean', 'options': {'mean': 'Average % (MEAN)', 'max': 'Highest % (MAX)', 'min': 'Lowest % (MIN)', 'count': 'Count'}},
+        'count': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)', 'count': 'Count'}},
+        'numeric': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)', 'count': 'Count'}}
+    }
+    return recommendations.get(col_type, recommendations['numeric'])
+
+def find_correct_column(data, col_name):
+    """Find correct column name in data."""
+    if not col_name:
+        return None
     
-    if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
-        return 'Month'
+    if col_name in data.columns:
+        return col_name
     
-    if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
-        return 'Year'
+    col_name_lower = col_name.lower()
+    
+    for actual_col in data.columns:
+        if actual_col.lower() == col_name_lower:
+            return actual_col
+    
+    col_normalized = col_name_lower.replace('_', '').replace(' ', '')
+    for actual_col in data.columns:
+        actual_normalized = actual_col.lower().replace('_', '').replace(' ', '')
+        if actual_normalized == col_normalized:
+            return actual_col
     
     return None
 
-def pre_detect_dimension_dynamic(question, dynamic_synonyms):
-    """Extract dimension using DYNAMIC synonyms from actual data"""
-    question_lower = question.lower()
+def find_correct_filter_column(data, filter_value, categorized_columns):
+    """Find which dimension column contains this filter value."""
+    if not filter_value:
+        return None
     
-    # Check dynamic synonyms FIRST (from actual data)
-    for actual_dim, synonyms in dynamic_synonyms['dimensions'].items():
-        for synonym in synonyms:
-            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
-                return actual_dim
+    filter_value_lower = str(filter_value).lower().strip()
     
-    # Fallback to hardcoded
-    for actual_dim, synonyms in DIMENSION_SYNONYMS.items():
-        for synonym in synonyms:
-            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
-                return actual_dim
+    # Search in dimension columns only
+    for col in categorized_columns['dimensions'].keys():
+        if col in data.columns:
+            for actual_value in data[col].dropna().unique():
+                if str(actual_value).lower().strip() == filter_value_lower:
+                    return col
+    
+    for col in categorized_columns['dimensions'].keys():
+        if col in data.columns:
+            for actual_value in data[col].dropna().unique():
+                if filter_value_lower in str(actual_value).lower():
+                    return col
     
     return None
 
-def pre_detect_metric_dynamic(question, dynamic_synonyms):
-    """Extract metric using DYNAMIC synonyms from actual data"""
-    question_lower = question.lower()
+def normalize_filter_value(filter_value, filter_column, data):
+    """Normalize filter values to match data format."""
+    if not filter_value or not filter_column:
+        return filter_value
     
-    # Check dynamic synonyms FIRST (from actual data)
-    for actual_metric, synonyms in dynamic_synonyms['metrics'].items():
-        for synonym in synonyms:
-            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
-                return actual_metric
+    filter_value_str = str(filter_value).lower().strip()
     
-    # Fallback to hardcoded
-    for actual_metric, synonyms in METRIC_SYNONYMS.items():
-        for synonym in synonyms:
-            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
-                return actual_metric
+    if 'quarter' in filter_column.lower():
+        if filter_value_str.startswith('q'):
+            quarter_num = filter_value_str[1:]
+            if quarter_num in ['1', '2', '3', '4']:
+                return quarter_num
     
-    return None
+    if 'month' in filter_column.lower():
+        month_map = {
+            'jan': ['1', 'january'], 'feb': ['2', 'february'], 'mar': ['3', 'march'],
+            'apr': ['4', 'april'], 'may': ['5'], 'jun': ['6', 'june'],
+            'jul': ['7', 'july'], 'aug': ['8', 'august'], 'sep': ['9', 'september'],
+            'oct': ['10', 'october'], 'nov': ['11', 'november'], 'dec': ['12', 'december']
+        }
+        for abbr, variants in month_map.items():
+            if filter_value_str.startswith(abbr):
+                for variant in variants:
+                    for actual_val in data[filter_column].dropna().unique():
+                        if str(actual_val).lower() == variant:
+                            return str(actual_val)
+    
+    if 'year' in filter_column.lower():
+        return str(filter_value)
+    
+    return filter_value
 
 def detect_aggregation_function(question, value_col, category_col=None):
-    """Smart aggregation detection - CRITICAL for group by queries"""
+    """Smart aggregation detection."""
     question_lower = question.lower()
     col_type = get_column_type(value_col)
     
@@ -300,16 +361,12 @@ def detect_aggregation_function(question, value_col, category_col=None):
     
     if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
         return 'mean'
-    
     if any(word in question_lower for word in ['total', 'sum']):
         return 'sum'
-    
     if any(word in question_lower for word in ['count', 'how many']):
         return 'count'
-    
     if any(word in question_lower for word in ['minimum', 'min']):
         return 'min'
-    
     if any(word in question_lower for word in ['maximum', 'max']):
         return 'max'
     
@@ -331,11 +388,11 @@ def get_column_statistics(data, column):
         }
         if data[column].dtype in ['int64', 'float64']:
             stats.update({
-                "Min": float(data[column].min()),
-                "Max": float(data[column].max()),
-                "Mean": float(data[column].mean()),
-                "Median": float(data[column].median()),
-                "Std Dev": float(data[column].std()),
+                "Min": float(data[column].min()) if not data[column].isnull().all() else None,
+                "Max": float(data[column].max()) if not data[column].isnull().all() else None,
+                "Mean": float(data[column].mean()) if not data[column].isnull().all() else None,
+                "Median": float(data[column].median()) if not data[column].isnull().all() else None,
+                "Std Dev": float(data[column].std()) if not data[column].isnull().all() else None,
             })
         else:
             stats["Sample Values"] = ", ".join(str(v) for v in data[column].unique()[:5])
@@ -343,45 +400,44 @@ def get_column_statistics(data, column):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def ai_understand_query(user_question, data, timeout_seconds, temperature, dynamic_synonyms):
-    """Use AI to understand what the user is asking"""
+def ai_understand_query(user_question, data, timeout_seconds, temperature, categorized_columns):
+    """Use AI with smart column detection."""
     
-    metrics_list = ", ".join(ALL_METRICS)
-    dimensions_list = ", ".join(DIMENSION_COLUMNS)
-    
-    # PRE-DETECT using DYNAMIC synonyms
-    pre_metric = pre_detect_metric_dynamic(user_question, dynamic_synonyms)
-    pre_dimension = pre_detect_dimension_dynamic(user_question, dynamic_synonyms)
+    # Use SMART detection first
+    smart_metric = find_best_metric(user_question, categorized_columns)
+    smart_dimension = find_best_dimension(user_question, categorized_columns)
+    smart_time = find_best_time_column(user_question, categorized_columns)
     pre_time_value = detect_time_period_value(user_question)
-    pre_time_period = pre_detect_time_period(user_question)
+    
+    metrics_list = ", ".join(categorized_columns['metrics'].keys())
+    dimensions_list = ", ".join(categorized_columns['dimensions'].keys())
+    time_list = ", ".join(categorized_columns['time'].keys())
     
     prompt = f"""TASK: Extract EXACT column names from a data question. RETURN ONLY EXACT COLUMN NAMES.
 
-FINANCIAL METRICS (sum): {', '.join(FINANCIAL_COLUMNS)}
-PERCENTAGE METRICS (average): {', '.join(PERCENTAGE_COLUMNS)}
-COUNT METRICS: {', '.join(COUNT_COLUMNS)}
-DIMENSIONS: {dimensions_list}
-TIME: Year, Quarter, Month
+AVAILABLE METRICS: {metrics_list or 'none'}
+AVAILABLE DIMENSIONS: {dimensions_list or 'none'}
+AVAILABLE TIME COLUMNS: {time_list or 'none'}
 
 QUESTION: {user_question}
 
 RULES:
-1. METRIC: Return EXACTLY ONE metric name. Return just the metric name.
-   HINT: The question likely mentions: {pre_metric or 'unknown metric'}
+1. METRIC: Return EXACTLY ONE metric name from AVAILABLE METRICS only.
+   HINT: Likely: {smart_metric or 'unknown'}
 2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", "per X", or "compare".
-   HINT: The question likely mentions: {pre_dimension or 'no dimension'}
-3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time OR filtering by time
-   HINT: Time column likely is: {pre_time_period or 'none detected'}
+   HINT: Likely: {smart_dimension or 'none'}
+3. TIME_COLUMN: Return time column name ONLY if grouping/filtering by time
+   HINT: Likely: {smart_time or 'none'}
 4. FILTER_VALUE: Return a specific value - ONLY if explicitly mentioned
-   Time value in question: {pre_time_value or 'none detected'}
-5. NEVER add values or dimensions that aren't explicitly in the question
+   Time value detected: {pre_time_value or 'none'}
+5. NEVER add values that aren't explicitly in the question
 
 RESPOND EXACTLY 7 LINES (no extra text):
 METRIC: [exact name or NONE]
 DIMENSION: [exact name or NONE]
-TIME_PERIOD: [Year OR Quarter OR Month OR NONE]
+TIME_COLUMN: [exact name or NONE]
 FILTER_VALUE: [value or NONE]
-QUERY_PATTERN: [category_comparison OR filtered_total OR yearly_total]
+QUERY_PATTERN: [category_comparison OR filtered_total OR time_total]
 REASONING: [one line]
 AI_CONFIDENCE: [high OR medium OR low]"""
     
@@ -394,14 +450,14 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             lines = ai_response.split('\n')
             extracted = {
-                "metric": pre_metric,
-                "dimension": pre_dimension,
-                "time_period": pre_time_period,
+                "metric": smart_metric,
+                "dimension": smart_dimension,
+                "time_column": smart_time,
                 "filter_value": None,
                 "query_pattern": None,
                 "reasoning": "Analysis",
                 "confidence": "medium",
-                "time_period_value": pre_time_value
+                "time_value": pre_time_value
             }
             
             for line in lines:
@@ -413,10 +469,10 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE" and val.strip():
                         extracted["dimension"] = val
-                elif "TIME_PERIOD:" in line:
+                elif "TIME_COLUMN:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE" and val.strip():
-                        extracted["time_period"] = val
+                        extracted["time_column"] = val
                 elif "FILTER_VALUE:" in line:
                     val = line.split(":", 1)[1].strip()
                     if val.upper() != "NONE" and val.strip():
@@ -430,46 +486,22 @@ AI_CONFIDENCE: [high OR medium OR low]"""
                     val = line.split(":", 1)[1].strip().lower()
                     extracted["confidence"] = val
             
-            # Validate metric
-            if extracted["metric"]:
-                metric_found = False
-                for valid_metric in ALL_METRICS:
-                    if extracted["metric"].lower() == valid_metric.lower():
-                        extracted["metric"] = valid_metric
-                        metric_found = True
-                        break
-                
-                if not metric_found:
-                    correct_metric = find_correct_column(data, extracted["metric"])
-                    if correct_metric:
-                        extracted["metric"] = correct_metric
-            
-            if extracted["dimension"]:
-                correct_dimension = find_correct_column(data, extracted["dimension"])
-                if correct_dimension:
-                    extracted["dimension"] = correct_dimension
-            
-            if extracted["time_period"]:
-                correct_time = find_correct_column(data, extracted["time_period"])
-                if correct_time:
-                    extracted["time_period"] = correct_time
-            
             query_params = {
-                "query_type": "total_by_period",
-                "period_column": extracted["time_period"],
+                "query_type": "total_by_time",
+                "time_column": extracted["time_column"],
                 "category_column": None,
                 "value_column": extracted["metric"],
                 "filter_column": None,
                 "filter_value": None,
                 "reasoning": extracted["reasoning"],
                 "aggregation_function": None,
-                "time_period_value": extracted["time_period_value"]
+                "time_value": extracted["time_value"]
             }
             
-            if extracted["time_period_value"] and extracted["time_period"]:
-                extracted["time_period_value"] = normalize_filter_value(
-                    extracted["time_period_value"],
-                    extracted["time_period"],
+            if extracted["time_value"] and extracted["time_column"]:
+                extracted["time_value"] = normalize_filter_value(
+                    extracted["time_value"],
+                    extracted["time_column"],
                     data
                 )
             
@@ -482,34 +514,27 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             if extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'which', 'what', 'per ', ' by ']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
-                query_params["period_column"] = None
+                query_params["time_column"] = None
                 query_params["filter_column"] = None
                 query_params["filter_value"] = None
             
-            elif extracted["time_period_value"]:
-                query_params["query_type"] = "total_by_period"
-                query_params["period_column"] = extracted["time_period"] or "Year"
-                query_params["filter_value"] = extracted["time_period_value"]
-                query_params["filter_column"] = extracted["time_period"] or "Year"
+            elif extracted["time_value"]:
+                query_params["query_type"] = "filter_by_time"
+                query_params["time_column"] = extracted["time_column"]
+                query_params["filter_value"] = extracted["time_value"]
+                query_params["filter_column"] = extracted["time_column"]
             
             elif extracted["filter_value"]:
-                correct_col = find_correct_filter_column(data, extracted["filter_value"])
+                correct_col = find_correct_filter_column(data, extracted["filter_value"], categorized_columns)
                 if correct_col:
                     query_params["query_type"] = "filter_and_sum"
                     query_params["filter_column"] = correct_col
                     query_params["filter_value"] = extracted["filter_value"]
-                    query_params["period_column"] = None
+                    query_params["time_column"] = None
             
             else:
-                query_params["query_type"] = "total_by_period"
-                query_params["period_column"] = extracted["time_period"] or "Year"
-            
-            if query_params["filter_value"] and query_params["filter_column"] and query_params["query_type"] != "total_by_period":
-                query_params["filter_value"] = normalize_filter_value(
-                    query_params["filter_value"],
-                    query_params["filter_column"],
-                    data
-                )
+                query_params["query_type"] = "total_by_time"
+                query_params["time_column"] = extracted["time_column"]
             
             return query_params, None
         else:
@@ -522,30 +547,30 @@ AI_CONFIDENCE: [high OR medium OR low]"""
         return None, f"Error: {str(e)}"
 
 def execute_query(data, query_params):
-    """Execute the query using Python"""
+    """Execute the query using Python."""
     try:
         query_type = query_params.get("query_type", "").lower()
         
-        if query_type == "total_by_period":
-            period_col = query_params.get("period_column")
+        if query_type in ["total_by_time", "filter_by_time"]:
+            time_col = query_params.get("time_column")
             value_col = query_params.get("value_column")
             filter_val = query_params.get("filter_value")
             
-            if not period_col or not value_col:
-                return None, "Missing period or value column"
+            if not time_col or not value_col:
+                return None, "Missing time or value column"
             
-            if period_col not in data.columns or value_col not in data.columns:
-                return None, f"Column not found. Looking for Period: '{period_col}', Value: '{value_col}'. Available: {list(data.columns)}"
+            if time_col not in data.columns or value_col not in data.columns:
+                return None, f"Column not found. Time: '{time_col}', Value: '{value_col}'. Available: {list(data.columns)}"
             
             if filter_val:
-                filtered = data[data[period_col].astype(str) == str(filter_val)]
+                filtered = data[data[time_col].astype(str) == str(filter_val)]
                 if len(filtered) == 0:
-                    return None, f"No data found for {period_col}='{filter_val}'"
+                    return None, f"No data found for {time_col}='{filter_val}'"
                 total = filtered[value_col].sum()
-                return pd.DataFrame({period_col: [filter_val], f"Total {value_col}": [total]}), None
+                return pd.DataFrame({time_col: [filter_val], f"Total {value_col}": [total]}), None
             else:
-                result = data.groupby(period_col)[value_col].sum().reset_index()
-                result.columns = [period_col, f"Total {value_col}"]
+                result = data.groupby(time_col)[value_col].sum().reset_index()
+                result.columns = [time_col, f"Total {value_col}"]
                 return result, None
         
         elif query_type == "best_worst_by_category":
@@ -554,13 +579,10 @@ def execute_query(data, query_params):
             agg_func = query_params.get("aggregation_function")
             
             if not category_col or not value_col:
-                return None, f"Missing category or value column. Category: {category_col}, Value: {value_col}"
+                return None, f"Missing category or value column"
             
-            if category_col not in data.columns:
-                return None, f"Category column '{category_col}' not found. Available: {list(data.columns)}"
-            
-            if value_col not in data.columns:
-                return None, f"Value column '{value_col}' not found. Available: {list(data.columns)}"
+            if category_col not in data.columns or value_col not in data.columns:
+                return None, f"Column not found. Category: '{category_col}', Value: '{value_col}'. Available: {list(data.columns)}"
             
             if agg_func == 'mean':
                 result = data.groupby(category_col)[value_col].mean().reset_index()
@@ -575,12 +597,11 @@ def execute_query(data, query_params):
                 result = data.groupby(category_col)[value_col].min().reset_index()
                 label = f"Min {value_col}"
             else:
-                value_col_type = get_column_type(value_col)
-                
-                if value_col_type == 'percentage':
+                col_type = get_column_type(value_col)
+                if col_type == 'percentage':
                     result = data.groupby(category_col)[value_col].mean().reset_index()
                     label = f"Average {value_col}"
-                elif value_col_type == 'financial':
+                elif col_type == 'financial':
                     result = data.groupby(category_col)[value_col].sum().reset_index()
                     label = f"Total {value_col}"
                 else:
@@ -589,7 +610,6 @@ def execute_query(data, query_params):
             
             result = result.sort_values(value_col, ascending=False)
             result.columns = [category_col, label]
-            
             return result, None
         
         elif query_type == "filter_and_sum":
@@ -598,21 +618,19 @@ def execute_query(data, query_params):
             value_col = query_params.get("value_column")
             
             if not filter_col or not filter_val or not value_col:
-                return None, f"Missing filter parameters. Filter Column: {filter_col}, Filter Value: {filter_val}, Value Column: {value_col}"
+                return None, "Missing filter parameters"
             
             if filter_col not in data.columns or value_col not in data.columns:
-                return None, f"Invalid columns. Filter: {filter_col}, Value: {value_col}. Available: {list(data.columns)}"
+                return None, f"Column not found. Filter: '{filter_col}', Value: '{value_col}'"
             
             filter_val = normalize_filter_value(filter_val, filter_col, data)
-            
             filtered = data[data[filter_col].astype(str) == str(filter_val)]
+            
             if len(filtered) == 0:
-                return None, f"No data found for {filter_col}='{filter_val}'. Available values in {filter_col}: {data[filter_col].unique()[:5].tolist()}"
+                return None, f"No data found for {filter_col}='{filter_val}'"
             
             total = filtered[value_col].sum()
-            result_table = filtered[[filter_col, value_col]].copy()
-            
-            return (result_table, total), None
+            return (filtered[[filter_col, value_col]], total), None
         
         else:
             return None, "Unknown query type"
@@ -639,8 +657,18 @@ if uploaded_file:
         else:
             data = pd.read_csv(temp_path)
         
-        # BUILD DYNAMIC SYNONYMS FROM ACTUAL DATA
-        dynamic_synonyms = build_dynamic_synonyms(data)
+        # PROFILE AND CATEGORIZE COLUMNS
+        column_profiles = profile_columns(data)
+        categorized_columns = categorize_columns(column_profiles)
+        
+        # Show detected column types
+        with st.expander("🔍 Detected Column Types", expanded=False):
+            st.write("**Metrics:**", list(categorized_columns['metrics'].keys()))
+            st.write("**Dimensions:**", list(categorized_columns['dimensions'].keys()))
+            st.write("**Time Columns:**", list(categorized_columns['time'].keys()))
+            st.write("**IDs/Names:**", list(categorized_columns['ids'].keys()))
+            if categorized_columns['unknown']:
+                st.write("**Unknown:**", list(categorized_columns['unknown'].keys()))
         
         tab1, tab2, tab3 = st.tabs(["📊 Data Preview", "📈 Data Stats", "🔍 Detailed Info"])
         
@@ -672,88 +700,16 @@ if uploaded_file:
             st.subheader("🔍 Column Details")
             col_info = pd.DataFrame({
                 'Column Name': data.columns,
-                'Data Type': [str(dt) for dt in data.dtypes.values],
+                'Data Type': [str(data[col].dtype) for col in data.columns],
                 'Non-Null Count': [int(data[col].count()) for col in data.columns],
-                'Null Count': [int(data[col].isnull().sum()) for col in data.columns],
                 'Unique Values': [f"{int(data[col].nunique()):,}" for col in data.columns]
             })
             st.dataframe(col_info, width='stretch')
         
         st.divider()
         
-        st.subheader("🧮 Manual Data Calculations")
-        st.info("✨ Smart Aggregation: Automatically selects the best function for each column type!")
-        
-        calc_tab1, calc_tab2, calc_tab3, calc_tab4 = st.tabs(
-            ["📊 Column Stats", "🔍 Filter & View", "👥 Group & Aggregate", "📋 Custom View"]
-        )
-        
-        with calc_tab1:
-            st.write("**Get detailed statistics for any column**")
-            selected_col = st.selectbox("Select column:", data.columns, key="stat_col")
-            if st.button("Get Column Statistics", key="btn_col_stats"):
-                with st.spinner("Calculating..."):
-                    stats = get_column_statistics(data, selected_col)
-                    if isinstance(stats, dict):
-                        st.success("✅ Statistics Complete!")
-                        for key, value in stats.items():
-                            st.write(f"**{key}:** {value}")
-                    else:
-                        st.code(stats, language="text")
-        
-        with calc_tab2:
-            st.write("**Filter data by column values**")
-            filter_col = st.selectbox("Filter by column:", data.columns, key="filter_col_view")
-            unique_vals = sorted([str(v) for v in data[filter_col].dropna().unique().tolist()])
-            selected_vals = st.multiselect(f"Select values from {filter_col}:", unique_vals, key="filter_vals_view")
-            if selected_vals:
-                if st.button("Apply Filter & View", key="btn_filter_view"):
-                    filtered = data[data[filter_col].astype(str).isin(selected_vals)].copy()
-                    st.success(f"✅ Showing {len(filtered)} rows")
-                    st.dataframe(filtered, width='stretch')
-                    st.code(filtered.to_csv(index=False), language="csv")
-        
-        with calc_tab3:
-            st.write("**Group & Aggregate**")
-            group_cols_selected = st.multiselect("📍 Select column(s) to group by:", data.columns, key="group_by_cols")
-            if group_cols_selected:
-                numeric_cols = data.select_dtypes(include=['number']).columns.tolist()
-                if numeric_cols:
-                    agg_cols_selected = st.multiselect("📊 Select numeric column(s) to aggregate:", numeric_cols, key="agg_cols_selected")
-                    if agg_cols_selected:
-                        st.write("**Configure Aggregation:**")
-                        agg_config = {}
-                        col_configs = st.columns(min(len(agg_cols_selected), 3))
-                        for idx, col in enumerate(agg_cols_selected):
-                            col_idx = idx % 3
-                            with col_configs[col_idx]:
-                                col_type = get_column_type(col)
-                                recommended = get_recommended_functions(col)
-                                st.write(f"**{col}** ({col_type})")
-                                selected_func = st.selectbox(f"Function for {col}:", list(recommended['options'].keys()), index=list(recommended['options'].keys()).index(recommended['default']), format_func=lambda x: recommended['options'][x], key=f"agg_func_{col}")
-                                agg_config[col] = selected_func
-                        if st.button("🚀 Group & Aggregate", key="btn_group_agg"):
-                            with st.spinner("Calculating..."):
-                                try:
-                                    result = data.groupby(group_cols_selected).agg(agg_config).reset_index()
-                                    st.success("✅ Aggregation Complete!")
-                                    st.dataframe(result, width='stretch')
-                                    st.code(result.to_csv(index=False), language="csv")
-                                except Exception as e:
-                                    st.error(f"❌ Error: {str(e)}")
-        
-        with calc_tab4:
-            st.write("**Select specific columns**")
-            cols_to_display = st.multiselect("Select columns:", data.columns, default=list(data.columns[:10]), key="cols_display")
-            if cols_to_display:
-                if st.button("Display Data", key="btn_display"):
-                    st.dataframe(data[cols_to_display], width='stretch')
-                    st.code(data[cols_to_display].to_csv(index=False), language="csv")
-        
-        st.divider()
-        
         st.subheader("🤖 AI-Powered Natural Language Query")
-        st.info("Ask questions in natural language. AI understands → Python calculates → Exact results!")
+        st.info("Ask questions in natural language. Works with ANY dataset!")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -763,17 +719,15 @@ if uploaded_file:
         with col3:
             st.metric("Status", "✅ Ready")
         
-        st.write(f"**Available columns:** {', '.join(data.columns.tolist())}")
-        
         with st.form("query_form", clear_on_submit=True):
-            user_question = st.text_area("Ask about your data (natural language):", placeholder="Example: What was the yearly total spend? or What GEO had the highest KPI_% over all years?", height=100)
+            user_question = st.text_area("Ask about your data:", placeholder="Example: What was the total revenue in 2024? or Which product had the highest profit?", height=100)
             submit_button = st.form_submit_button("📊 Analyze", use_container_width=True)
         
         if submit_button and user_question:
             st.write("🤖 Processing your question...")
             
             with st.spinner("🧠 AI analyzing question..."):
-                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature, dynamic_synonyms)
+                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature, categorized_columns)
             
             if ai_error:
                 st.error(f"❌ AI Error: {ai_error}")
@@ -783,17 +737,14 @@ if uploaded_file:
                         st.write(f"**Your Question:** {user_question}")
                         st.write(f"**AI Understood:** {query_params.get('reasoning', 'N/A')}")
                         st.write(f"**Query Type:** `{query_params.get('query_type')}`")
-                        st.write(f"**Aggregation Function:** `{query_params.get('aggregation_function') or 'default (based on column type)'}`")
-                        st.write("**Columns to Use:**")
+                        st.write(f"**Aggregation Function:** `{query_params.get('aggregation_function') or 'default'}`")
                         st.json({
-                            "Period Column": query_params.get('period_column'),
+                            "Time Column": query_params.get('time_column'),
                             "Category Column": query_params.get('category_column'),
                             "Value Column": query_params.get('value_column'),
                             "Filter Column": query_params.get('filter_column'),
                             "Filter Value": query_params.get('filter_value'),
-                            "Time Period Value": query_params.get('time_period_value')
                         })
-                        st.write(f"**Available columns in dataset:** {data.columns.tolist()}")
                 
                 with st.spinner("📊 Calculating results..."):
                     result, error = execute_query(data, query_params)
@@ -809,7 +760,6 @@ if uploaded_file:
                         st.dataframe(result_table, width='stretch')
                     elif isinstance(result, pd.DataFrame):
                         st.dataframe(result, width='stretch')
-                        st.code(result.to_csv(index=False), language="csv")
         
         import os as os_module
         if os_module.path.exists(temp_path):
