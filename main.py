@@ -156,9 +156,10 @@ def detect_time_period_value(question):
     return None
 
 def pre_detect_dimension(question):
-    """Extract dimension keyword before AI gets it"""
+    """Extract dimension keyword before AI gets it - with case handling"""
     question_lower = question.lower()
     
+    # Check for explicit dimension mentions
     for dim in DIMENSION_COLUMNS:
         dim_lower = dim.lower()
         if re.search(rf'\b{dim_lower}\b', question_lower):
@@ -182,7 +183,7 @@ def detect_aggregation_function(question, value_col, category_col=None):
     question_lower = question.lower()
     col_type = get_column_type(value_col)
     
-    if any(word in question_lower for word in ['average', 'avg', 'mean']):
+    if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
         return 'mean'
     
     if any(word in question_lower for word in ['total', 'sum']):
@@ -261,7 +262,7 @@ QUESTION: {user_question}
 RULES:
 1. METRIC: Return EXACTLY ONE metric name. Do NOT add words. Return just the metric name.
    HINT: The question likely mentions: {pre_metric or 'unknown metric'}
-2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", or "compare".
+2. DIMENSION: Return dimension name ONLY if asking "which X", "by X", "per X", or "compare".
    HINT: The question likely mentions: {pre_dimension or 'no dimension'}
 3. TIME_PERIOD: Return "Year", "Quarter", or "Month" ONLY if grouping by time
 4. FILTER_VALUE: Return a specific value - ONLY if explicitly mentioned
@@ -286,8 +287,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             lines = ai_response.split('\n')
             extracted = {
-                "metric": pre_metric,  # Use pre-detected metric as fallback
-                "dimension": pre_dimension,  # Use pre-detected dimension as fallback
+                "metric": pre_metric,
+                "dimension": pre_dimension,
                 "time_period": None,
                 "filter_value": None,
                 "query_pattern": None,
@@ -365,8 +366,8 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             
             question_lower = user_question.lower()
             
-            # PRIORITY 1: Group by dimension (which/highest/lowest)
-            if extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'which', 'what']) or ' by ' in question_lower):
+            # PRIORITY 1: Group by dimension (which/highest/lowest/per)
+            if extracted["dimension"] and (any(word in question_lower for word in ['highest', 'lowest', 'best', 'worst', 'top', 'which', 'what', 'per ', ' by ']) or ' by ' in question_lower):
                 query_params["query_type"] = "best_worst_by_category"
                 query_params["category_column"] = extracted["dimension"]
                 query_params["period_column"] = None
@@ -496,7 +497,7 @@ def execute_query(data, query_params):
             
             filter_val = normalize_filter_value(filter_val, filter_col, data)
             
-            filtered = data[data[filter_col].astype(str).str.contains(str(filter_val), case=False, na=False)]
+            filtered = data[data[filter_col].astype(str) == str(filter_val)]
             if len(filtered) == 0:
                 return None, f"No data found for {filter_col}='{filter_val}'. Available values in {filter_col}: {data[filter_col].unique()[:5].tolist()}"
             
