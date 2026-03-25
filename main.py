@@ -22,6 +22,16 @@ DIMENSION_COLUMNS = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Pro
 
 ALL_METRICS = FINANCIAL_COLUMNS + PERCENTAGE_COLUMNS + COUNT_COLUMNS
 
+# DIMENSION SYNONYMS - Map user language to actual column names
+DIMENSION_SYNONYMS = {
+    'Sales_Rep': ['sales rep', 'sdr', 'sales representative', 'sales_rep', 'salesman', 'saleswoman', 'account executive', 'rep'],
+    'Country': ['country', 'nation', 'countries'],
+    'Product': ['product', 'item', 'sku', 'products'],
+    'Category': ['category', 'type', 'class', 'categories'],
+    'Customer': ['customer', 'client', 'account', 'customers', 'clients'],
+    'Geo': ['geo', 'region', 'geography', 'location', 'geographic'],
+}
+
 def get_column_type(col_name):
     if col_name in FINANCIAL_COLUMNS:
         return 'financial'
@@ -174,10 +184,16 @@ def pre_detect_time_period(question):
     return None
 
 def pre_detect_dimension(question):
-    """Extract dimension keyword before AI gets it - with case handling"""
+    """Extract dimension keyword before AI gets it - with SYNONYM support"""
     question_lower = question.lower()
     
-    # Check for explicit dimension mentions
+    # Check for synonyms FIRST (higher priority)
+    for actual_dim, synonyms in DIMENSION_SYNONYMS.items():
+        for synonym in synonyms:
+            if re.search(rf'\b{re.escape(synonym)}\b', question_lower):
+                return actual_dim
+    
+    # Fallback: check original DIMENSION_COLUMNS
     for dim in DIMENSION_COLUMNS:
         dim_lower = dim.lower()
         if re.search(rf'\b{dim_lower}\b', question_lower):
@@ -301,7 +317,7 @@ AI_CONFIDENCE: [high OR medium OR low]"""
             extracted = {
                 "metric": pre_metric,
                 "dimension": pre_dimension,
-                "time_period": pre_time_period,  # Use pre-detected time period
+                "time_period": pre_time_period,
                 "filter_value": None,
                 "query_pattern": None,
                 "reasoning": "Analysis",
