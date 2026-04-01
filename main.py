@@ -213,7 +213,6 @@ def smart_column_match(question, available_columns):
             return col
     
     # PHASE 3: Match longer column names FIRST (more specific)
-    # Sort by length descending so we match "Profit_Margin_%" before "Profit"
     sorted_cols = sorted(available_columns, key=lambda x: len(x), reverse=True)
     for col in sorted_cols:
         col_lower = col.lower()
@@ -441,7 +440,7 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
         }
     
     # PRIORITY 2: Filter by time
-    elif pre_time_value:
+    elif pre_time_value and smart_time:
         query_params = {
             "query_type": "filter_by_time",
             "time_column": smart_time,
@@ -490,16 +489,15 @@ def execute_query_with_validation(data, query_params):
             result = result.sort_values(value_col, ascending=(agg_func == 'min'))
             result.columns = [category_col, f"{'Min' if agg_func == 'min' else 'Max' if agg_func == 'max' else 'Average'} {value_col}"]
             
-            # VALIDATION: Verify the top result manually
+            # VALIDATION: Simple validation
             validation = {
                 "query_type": query_type,
                 "category_col": category_col,
                 "value_col": value_col,
                 "agg_func": agg_func,
-                "top_result": result.iloc[0].to_dict() if len(result) > 0 else None,
+                "top_result": dict(result.iloc[0]) if len(result) > 0 else None,
                 "total_rows": len(data),
                 "total_groups": len(result),
-                "data_sample": data.groupby(category_col)[value_col].describe().round(2).to_dict() if len(result) < 20 else None,
             }
             
             return result, None, validation
@@ -513,17 +511,16 @@ def execute_query_with_validation(data, query_params):
             
             filtered = data[data[time_col].astype(str) == str(filter_val)]
             if len(filtered) == 0:
-                return None, f"No data for {time_col}={filter_val}", None
+                return None, f"No data for {time_col}={filter_val}. Available values: {sorted(data[time_col].unique())}", None
             
             total = filtered[value_col].sum()
-            result = pd.DataFrame({f"Total {value_col}": [total]})
+            result = pd.DataFrame({f"Total {value_col}": [round(total, 2)]})
             
-            # VALIDATION: Show breakdown by category or another dimension
-            first_dim_col = None
-            for col in data.columns:
-                if col != time_col and col != value_col and data[col].dtype == 'object':
-                    first_dim_col = col
-                    break
+            # Get first dimension column for breakdown
+            dim_cols = [c for c in data.columns if c not in [time_col, value_col] and data[c].dtype == 'object']
+            breakdown = {}
+            if dim_cols:
+                breakdown = filtered.groupby(dim_cols[0])[value_col].sum().round(2).to_dict()
             
             validation = {
                 "query_type": query_type,
@@ -533,8 +530,8 @@ def execute_query_with_validation(data, query_params):
                 "total_result": round(total, 2),
                 "rows_included": len(filtered),
                 "rows_total": len(data),
-                "breakdown_by_category": filtered.groupby(first_dim_col if first_dim_col else filtered.columns[0])[value_col].sum().round(2).to_dict() if first_dim_col else {},
-                "sample_records": filtered.head(5).to_dict('records'),
+                "breakdown": breakdown,
+                "sample_records": filtered.head(3).to_dict('records'),
             }
             
             return result, None, validation
@@ -543,19 +540,18 @@ def execute_query_with_validation(data, query_params):
             total = data[value_col].sum()
             result = pd.DataFrame({f"Total {value_col}": [round(total, 2)]})
             
-            # VALIDATION: Show breakdown by time period
+            # Breakdown by time period
             time_col = query_params.get("time_column")
+            breakdown = {}
             if time_col and time_col in data.columns:
                 breakdown = data.groupby(time_col)[value_col].sum().round(2).to_dict()
-            else:
-                breakdown = {}
             
             validation = {
                 "query_type": query_type,
                 "value_col": value_col,
                 "total_result": round(total, 2),
                 "total_rows": len(data),
-                "breakdown_by_time": breakdown,
+                "breakdown": breakdown,
                 "null_values": int(data[value_col].isnull().sum()),
             }
             
@@ -574,12 +570,11 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
         
         if error:
             results.append({
-                "Question": question[:60],
+                "Question": question[:50],
                 "Status": "❌ ERROR",
                 "Expected": expected_type,
                 "Got": "ERROR",
                 "Execution": "N/A",
-                "Details": error
             })
             continue
         
@@ -591,41 +586,34 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
         # Execute query to verify it works
         exec_result, exec_error, validation = execute_query_with_validation(data, query_params)
         
-        if exec_error:
-            execution_status = f"❌ EXEC ERROR: {exec_error[:50]}"
-        elif exec_result is None:
-            execution_status = "❌ No result"
-        else:
-            execution_status = "✅ EXECUTED"
+        execution_ok = exec_error is None and exec_result is not None
         
-        if type_match and metric_match and dim_match and not exec_error:
+        if type_match and metric_match and dim_match and execution_ok:
             results.append({
-                "Question": question[:60],
+                "Question": question[:50],
                 "Status": "✅ PASS",
-                "Expected": f"{expected_type}",
-                "Got": f"{query_params.get('query_type')}",
-                "Execution": execution_status,
-                "Details": f"Result rows: {len(exec_result)}"
+                "Expected": expected_type,
+                "Got": query_params.get('query_type'),
+                "Execution": "✅ OK",
             })
             passed += 1
         else:
-            details = []
+            issue_list = []
             if not type_match:
-                details.append(f"Type mismatch")
+                issue_list.append(f"Type")
             if not metric_match:
-                details.append(f"Metric mismatch")
+                issue_list.append(f"Metric")
             if not dim_match:
-                details.append(f"Dimension mismatch")
-            if exec_error:
-                details.append(f"Execution failed")
+                issue_list.append(f"Dim")
+            if not execution_ok:
+                issue_list.append(f"Exec: {exec_error[:30] if exec_error else 'No result'}")
             
             results.append({
-                "Question": question[:60],
+                "Question": question[:50],
                 "Status": "❌ FAIL",
-                "Expected": f"{expected_type}",
-                "Got": f"{query_params.get('query_type')}",
-                "Execution": execution_status,
-                "Details": " | ".join(details)
+                "Expected": expected_type,
+                "Got": query_params.get('query_type'),
+                "Execution": " | ".join(issue_list) if issue_list else "Unknown",
             })
     
     # Display results
@@ -644,7 +632,7 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
     # Show results table
     with st.expander("📋 Detailed Results"):
         results_df = pd.DataFrame(results)
-        st.dataframe(results_df, use_container_width=True, height=400)
+        st.dataframe(results_df, use_container_width=True, height=300)
     
     return passed, len(test_suite)
 
@@ -687,9 +675,11 @@ if uploaded_file:
                     for t in categorized_columns['time'].keys():
                         st.write(f"- {t}")
                 with col4:
-                    st.write("**IDs/Names:**")
-                    for i in list(categorized_columns['ids'].keys())[:5]:
-                        st.write(f"- {i}")
+                    st.write("**Sample Values (Time):**")
+                    if categorized_columns['time']:
+                        first_time_col = list(categorized_columns['time'].keys())[0]
+                        for val in data[first_time_col].unique()[:5]:
+                            st.write(f"- {val}")
         
         st.divider()
         
@@ -744,7 +734,7 @@ if uploaded_file:
         # Manual query tester
         st.divider()
         st.header("🔬 Manual Query Tester")
-        st.write("Test any custom question and verify results against actual data:")
+        st.write("Test any custom question:")
         
         with st.form("manual_query"):
             test_question = st.text_area("Question:", placeholder="Example: Which product had the highest KPI_%?", height=80)
@@ -760,11 +750,11 @@ if uploaded_file:
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.write("**Detection Results:**")
+                    st.write("**Detection:**")
                     st.json(query_params)
                 
                 with col2:
-                    st.write("**Query Execution:**")
+                    st.write("**Result:**")
                     result, exec_error, validation = execute_query_with_validation(data, query_params)
                     if exec_error:
                         st.error(exec_error)
@@ -772,39 +762,25 @@ if uploaded_file:
                         st.dataframe(result, use_container_width=True)
                 
                 # Show validation
-                if validation:
+                if validation and not exec_error:
                     st.divider()
-                    st.subheader("✅ Data Validation & Breakdown")
+                    st.subheader("✅ Data Validation")
                     
                     if query_params.get("query_type") == "best_worst_by_category":
                         st.write(f"**Top Result:** {validation['top_result']}")
-                        st.write(f"**Total Groups Found:** {validation['total_groups']}")
-                        st.write(f"**Total Data Rows Analyzed:** {validation['total_rows']}")
-                        
-                        if validation['data_sample']:
-                            with st.expander("📊 Statistical Breakdown by Group"):
-                                st.json(validation['data_sample'])
+                        st.write(f"**Total Groups:** {validation['total_groups']} | **Data Rows:** {validation['total_rows']}")
                     
                     elif query_params.get("query_type") == "filter_by_time":
-                        st.write(f"**Total Result:** {validation['total_result']}")
-                        st.write(f"**Rows Included:** {validation['rows_included']} out of {validation['rows_total']} total")
-                        
-                        if validation['breakdown_by_category']:
-                            with st.expander("📍 Breakdown by Category"):
-                                st.json(validation['breakdown_by_category'])
-                        
-                        with st.expander("📋 Sample Records (First 5 Rows)"):
-                            if validation['sample_records']:
-                                st.dataframe(pd.DataFrame(validation['sample_records']))
+                        st.write(f"**Total:** {validation['total_result']}")
+                        st.write(f"**Rows:** {validation['rows_included']}/{validation['rows_total']}")
+                        if validation['breakdown']:
+                            st.write("**Breakdown:**", validation['breakdown'])
                     
-                    else:  # total_by_time
-                        st.write(f"**Total Result:** {validation['total_result']}")
-                        st.write(f"**Null Values Found:** {validation['null_values']}")
-                        
-                        if validation['breakdown_by_time']:
-                            with st.expander("📈 Breakdown by Time Period"):
-                                chart_data = pd.DataFrame(list(validation['breakdown_by_time'].items()), columns=['Period', 'Total'])
-                                st.bar_chart(chart_data.set_index('Period'))
+                    else:  # total
+                        st.write(f"**Total:** {validation['total_result']}")
+                        st.write(f"**Null Values:** {validation['null_values']}")
+                        if validation['breakdown']:
+                            st.bar_chart(pd.Series(validation['breakdown']).rename("Total"))
         
         # Cleanup
         import os
@@ -812,7 +788,7 @@ if uploaded_file:
             os.remove(temp_path)
     
     except Exception as e:
-        st.error(f"❌ Error loading file: {str(e)}")
+        st.error(f"❌ Error: {str(e)}")
 
 else:
-    st.info("👉 Upload a sales data file to begin testing!")
+    st.info("👉 Upload a sales file")
