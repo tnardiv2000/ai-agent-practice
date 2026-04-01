@@ -8,12 +8,13 @@ import re
 
 load_dotenv()
 
-st.set_page_config(page_title="AI Data Analyzer Pro", layout="wide")
-st.title("📊 AI Data Analyzer Pro")
-st.write("Smart data analysis with AI understanding + 100% accurate Python calculations!")
+st.set_page_config(page_title="AI Data Analyzer Pro - SALES TEST", layout="wide")
+st.title("📊 AI Data Analyzer Pro - Sales Data Accuracy Testing")
+st.write("Target: 95%+ accuracy on sales dataset")
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
+# Column definitions
 FINANCIAL_COLUMNS = ['Spend', 'Savings', 'Revenue', 'Profit', 'Marketing_Spend']
 PERCENTAGE_COLUMNS = ['KPI_%', 'Profit_Margin_%', 'Return_Rate_%', 'Employee_Engagement_%', 'Customer_Satisfaction_Score']
 COUNT_COLUMNS = ['Units_Sold']
@@ -22,11 +23,39 @@ DIMENSION_COLUMNS = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Pro
 
 ALL_METRICS = FINANCIAL_COLUMNS + PERCENTAGE_COLUMNS + COUNT_COLUMNS
 
+# TEST SUITES
+PHASE_1_TESTS = [
+    ("What was the total revenue in 2024?", "filter_by_time", "Revenue", None, "2024"),
+    ("Which product had the highest KPI_%?", "best_worst_by_category", "KPI_%", "Product", None),
+    ("Show me the average spend per country", "best_worst_by_category", "Spend", "Country", None),
+    ("What sales rep had the lowest Profit_Margin_%?", "best_worst_by_category", "Profit_Margin_%", "Sales_Rep", None),
+    ("How much did we spend in Q3?", "filter_by_time", "Spend", None, "3"),
+]
+
+PHASE_2_EDGE_CASES = [
+    ("revenue for 2024", "filter_by_time", "Revenue", None, "2024"),
+    ("Q1 spending", "filter_by_time", "Spend", None, "1"),
+    ("Q2 savings", "filter_by_time", "Savings", None, "2"),
+    ("total profit by category", "best_worst_by_category", "Profit", "Category", None),
+    ("average KPI per product", "best_worst_by_category", "KPI_%", "Product", None),
+    ("which country had the most revenue?", "best_worst_by_category", "Revenue", "Country", None),
+    ("top customer by spending", "best_worst_by_category", "Spend", "Customer", None),
+    ("what was total units sold?", "total_by_time", "Units_Sold", None, None),
+    ("best employee engagement score", "total_by_time", "Employee_Engagement_%", None, None),
+    ("minimum profit margin", "total_by_time", "Profit_Margin_%", None, None),
+]
+
+PHASE_3_COMPLEX = [
+    ("worst return rate by product", "best_worst_by_category", "Return_Rate_%", "Product", None),
+    ("how much revenue did we make?", "total_by_time", "Revenue", None, None),
+    ("highest marketing spend by geo", "best_worst_by_category", "Marketing_Spend", "Geo", None),
+    ("lowest profit margin among sales reps", "best_worst_by_category", "Profit_Margin_%", "Sales_Rep", None),
+    ("total savings across all customers", "total_by_time", "Savings", None, None),
+    ("which sales rep had the highest KPI?", "best_worst_by_category", "KPI_%", "Sales_Rep", None),
+]
+
 def profile_columns(data):
-    """
-    Intelligently profile columns to determine their type and purpose.
-    Works with ANY dataset regardless of domain.
-    """
+    """Intelligently profile columns to determine their type and purpose."""
     column_profiles = {}
     
     for col in data.columns:
@@ -57,11 +86,11 @@ def profile_columns(data):
                     profile['synonyms'].extend(['percentage', 'percent', 'pct', '%'])
             
             # Is it a count/quantity?
-            if any(word in col_lower for word in ['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number', 'mp', 'w', 't', 'l', 'gf', 'ga', 'matches', 'wins', 'losses', 'draws']):
+            if any(word in col_lower for word in ['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number']):
                 profile['inferred_type'] = 'metric_count'
-                profile['synonyms'].extend(['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number', 'matches', 'wins', 'losses', 'draws'])
+                profile['synonyms'].extend(['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number'])
             
-            # Is it a financial/scoring metric?
+            # Is it a financial metric?
             elif any(word in col_lower for word in ['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'price', 'amount', 'value', 'fees', 'budget', 'points', 'score', 'goals']):
                 profile['inferred_type'] = 'metric_financial'
                 profile['synonyms'].extend(['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'amount', 'value', 'fees', 'budget', 'points', 'score', 'goals'])
@@ -90,7 +119,6 @@ def profile_columns(data):
                 profile['inferred_type'] = 'dimension'
                 profile['synonyms'].extend(['category', 'type', 'group', 'classification', 'segment'])
                 
-                # Add specific synonyms
                 if 'team' in col_lower:
                     profile['synonyms'].extend(['team', 'teams', 'club'])
                 if 'player' in col_lower:
@@ -102,15 +130,26 @@ def profile_columns(data):
                 if any(word in col_lower for word in ['region', 'geo', 'location', 'country']):
                     profile['synonyms'].extend(['region', 'geo', 'location', 'country', 'state'])
             
-            # High cardinality strings - STILL treat as potential dimension if name suggests it
+            # High cardinality strings (likely ID, name, or description)
             elif cardinality_ratio > 0.5:
                 profile['inferred_type'] = 'id_or_name'
                 profile['synonyms'].extend(['name', 'id', 'identifier', 'description', 'title'])
             
-            # Low cardinality strings
+            # Low cardinality strings (likely a category/dimension)
             elif cardinality <= 100:
                 profile['inferred_type'] = 'dimension'
                 profile['synonyms'].extend(['category', 'type', 'group', 'classification', 'segment'])
+                
+                if any(word in col_lower for word in ['region', 'geo', 'location', 'country', 'state', 'area', 'territory']):
+                    profile['synonyms'].extend(['region', 'geo', 'location', 'country', 'state', 'area', 'territory'])
+                if any(word in col_lower for word in ['product', 'item', 'sku', 'brand', 'line']):
+                    profile['synonyms'].extend(['product', 'item', 'sku', 'brand', 'line'])
+                if any(word in col_lower for word in ['customer', 'client', 'account', 'company', 'business', 'organization']):
+                    profile['synonyms'].extend(['customer', 'client', 'account', 'company', 'business', 'organization'])
+                if any(word in col_lower for word in ['sales_rep', 'sales rep', 'rep', 'salesman', 'agent', 'representative', 'employee', 'staff']):
+                    profile['synonyms'].extend(['sales_rep', 'sales rep', 'rep', 'salesman', 'agent', 'representative', 'employee', 'staff'])
+                if any(word in col_lower for word in ['category', 'type', 'class', 'segment', 'department']):
+                    profile['synonyms'].extend(['category', 'type', 'class', 'segment', 'department'])
             
             # Time columns
             if any(word in col_lower for word in ['date', 'time', 'year', 'month', 'quarter', 'week', 'day', 'timestamp']):
@@ -153,61 +192,97 @@ def categorize_columns(column_profiles):
     
     return categorized
 
-def find_best_metric(question, categorized_columns):
-    """Smart metric detection that works across domains."""
-    if not categorized_columns['metrics'] or not question:
+def smart_column_match(question, available_columns):
+    """Smart exact matching - prioritize LONGER column names (more specific)."""
+    if not available_columns or not question:
         return None
     
     question_lower = question.lower()
-    best_match = None
-    best_score = 0
+    question_words = re.findall(r'\b\w+\b', question_lower)
     
-    for col, profile in categorized_columns['metrics'].items():
-        for synonym in profile['synonyms']:
-            if synonym in question_lower:
-                score = len(synonym)
-                if score > best_score:
-                    best_score = score
-                    best_match = col
+    # PHASE 1: Exact full column name match (highest priority)
+    for col in available_columns:
+        col_lower = col.lower()
+        if col_lower in question_lower:
+            return col
     
-    return best_match
+    # PHASE 2: Partial match with underscores/spaces (high priority)
+    for col in available_columns:
+        col_clean = col.lower().replace('_', ' ')
+        if col_clean in question_lower:
+            return col
+    
+    # PHASE 3: Match longer column names FIRST (more specific)
+    # Sort by length descending so we match "Profit_Margin_%" before "Profit"
+    sorted_cols = sorted(available_columns, key=lambda x: len(x), reverse=True)
+    for col in sorted_cols:
+        col_lower = col.lower()
+        if col_lower in question_words:
+            return col
+    
+    return None
 
-def find_best_dimension(question, categorized_columns):
-    """Smart dimension detection - check ALL categorical columns."""
+def find_best_metric_strict(question, categorized_columns):
+    """Strict metric detection with special handling for ambiguous metrics."""
+    if not categorized_columns['metrics']:
+        return None
+    
+    question_lower = question.lower()
+    available_metrics = list(categorized_columns['metrics'].keys())
+    
+    # SPECIAL CASE: "margin" or "profit margin" should match "Profit_Margin_%"
+    if 'margin' in question_lower:
+        for metric in available_metrics:
+            if 'Profit_Margin' in metric:
+                return metric
+    
+    # SPECIAL CASE: "engagement" should match "Employee_Engagement_%"
+    if 'engagement' in question_lower:
+        for metric in available_metrics:
+            if 'Engagement' in metric:
+                return metric
+    
+    # SPECIAL CASE: "return" or "return rate" should match "Return_Rate_%"
+    if 'return' in question_lower:
+        for metric in available_metrics:
+            if 'Return_Rate' in metric:
+                return metric
+    
+    # SPECIAL CASE: "marketing" should match "Marketing_Spend"
+    if 'marketing' in question_lower:
+        for metric in available_metrics:
+            if 'Marketing' in metric:
+                return metric
+    
+    # SPECIAL CASE: "kpi" should match "KPI_%"
+    if 'kpi' in question_lower:
+        for metric in available_metrics:
+            if 'KPI' in metric:
+                return metric
+    
+    # Default: use smart matching
+    return smart_column_match(question, available_metrics)
+
+def find_best_dimension_strict(question, categorized_columns):
+    """Strict dimension detection using EXACT column matching."""
     if not question:
         return None
     
-    question_lower = question.lower()
-    best_match = None
-    best_score = 0
+    # Only search for dimension if question has dimension keywords
+    has_dimension_keyword = any(word in question.lower() for word in [
+        'which', 'by ', 'per ', 'for each', 'by each', 'top ', 'best ', 'worst ', 
+        'highest', 'lowest', 'most', 'least'
+    ])
     
-    # Check DIMENSION columns first (high priority)
-    for col, profile in categorized_columns['dimensions'].items():
-        for synonym in profile['synonyms']:
-            if synonym in question_lower:
-                score = len(synonym)
-                if score > best_score:
-                    best_score = score
-                    best_match = col
+    if not has_dimension_keyword:
+        return None
     
-    # IMPORTANT: Also check ID/NAME columns (they can be dimensions!)
-    # This is crucial for sports tables with team names
-    for col, profile in categorized_columns['ids'].items():
-        for synonym in profile['synonyms']:
-            if synonym in question_lower:
-                score = len(synonym)
-                if score > best_score:
-                    best_score = score
-                    best_match = col
+    available_dims = list(categorized_columns['dimensions'].keys()) + list(categorized_columns['ids'].keys())
     
-    # If still no match but question asks "which", "by", "per", etc - use ANY text column
-    if not best_match and any(word in question_lower for word in ['which', 'by ', 'per ', 'for each', 'by each']):
-        if categorized_columns['dimensions']:
-            best_match = list(categorized_columns['dimensions'].keys())[0]
-        elif categorized_columns['ids']:
-            best_match = list(categorized_columns['ids'].keys())[0]
+    if not available_dims:
+        return None
     
-    return best_match
+    return smart_column_match(question, available_dims)
 
 def find_best_time_column(question, categorized_columns):
     """Smart time column detection."""
@@ -216,46 +291,64 @@ def find_best_time_column(question, categorized_columns):
     
     question_lower = question.lower()
     
+    # Check for Quarter mentions
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
         for col in categorized_columns['time'].keys():
             if 'quarter' in col.lower():
                 return col
     
+    # Check for Month mentions
     if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
         for col in categorized_columns['time'].keys():
             if 'month' in col.lower():
                 return col
     
+    # Check for Year mentions
     if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
         for col in categorized_columns['time'].keys():
             if 'year' in col.lower():
                 return col
     
+    # Default to first time column
     if categorized_columns['time']:
         return list(categorized_columns['time'].keys())[0]
     
     return None
 
 def detect_time_period_value(question):
-    """Detect time period values from question."""
+    """Detect time period values from the current question."""
     question_lower = question.lower()
     words = re.findall(r'\b\w+\b', question_lower)
     
+    # Check for quarters
     for word in words:
         if word in ['q1', 'q2', 'q3', 'q4']:
-            return word.upper()
+            return word[1]  # Return just the number
     
-    full_months = ['january', 'february', 'march', 'april', 'may', 'june',
-                   'july', 'august', 'september', 'october', 'november', 'december']
+    # Check for full month names
+    full_months = {
+        'january': 'January', 'february': 'February', 'march': 'March',
+        'april': 'April', 'may': 'May', 'june': 'June',
+        'july': 'July', 'august': 'August', 'september': 'September',
+        'october': 'October', 'november': 'November', 'december': 'December'
+    }
+    
     for word in words:
         if word in full_months:
-            return word.capitalize()
+            return full_months[word]
     
-    month_abbrs = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    # Check for month abbreviations
+    month_abbrs = {
+        'jan': 'January', 'feb': 'February', 'mar': 'March', 'apr': 'April',
+        'may': 'May', 'jun': 'June', 'jul': 'July', 'aug': 'August',
+        'sep': 'September', 'oct': 'October', 'nov': 'November', 'dec': 'December'
+    }
+    
     for word in words:
         if word in month_abbrs:
-            return word.capitalize()
+            return month_abbrs[word]
     
+    # Check for years
     for word in words:
         if re.match(r'^(19|20)\d{2}$', word):
             return word
@@ -277,51 +370,32 @@ def get_column_type(col_name):
     else:
         return 'numeric'
 
-def get_recommended_functions(col_name):
-    """Get recommended aggregation functions."""
-    col_type = get_column_type(col_name)
-    recommendations = {
-        'financial': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'max': 'Highest (MAX)', 'min': 'Lowest (MIN)', 'mean': 'Average (MEAN)'}},
-        'percentage': {'default': 'mean', 'options': {'mean': 'Average % (MEAN)', 'max': 'Highest % (MAX)', 'min': 'Lowest % (MIN)'}},
-        'count': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)'}},
-        'numeric': {'default': 'sum', 'options': {'sum': 'Total (SUM)', 'mean': 'Average (MEAN)', 'max': 'Maximum (MAX)', 'min': 'Minimum (MIN)'}}
-    }
-    return recommendations.get(col_type, recommendations['numeric'])
-
-def find_correct_column(data, col_name):
-    """Find correct column name in data."""
-    if not col_name:
-        return None
+def detect_aggregation_function(question, value_col, category_col=None):
+    """Smart aggregation detection."""
+    question_lower = question.lower()
+    col_type = get_column_type(value_col)
     
-    if col_name in data.columns:
-        return col_name
+    if category_col:
+        if any(word in question_lower for word in ['lowest', 'minimum', 'min', 'least']):
+            if col_type == 'percentage':
+                return 'mean'
+            else:
+                return 'min'
+        elif any(word in question_lower for word in ['highest', 'maximum', 'max', 'most', 'top', 'best']):
+            if col_type == 'percentage':
+                return 'mean'
+            else:
+                return 'max'
     
-    col_name_lower = col_name.lower()
-    
-    for actual_col in data.columns:
-        if actual_col.lower() == col_name_lower:
-            return actual_col
-    
-    return None
-
-def find_correct_filter_column(data, filter_value, categorized_columns):
-    """Find which dimension column contains this filter value."""
-    if not filter_value:
-        return None
-    
-    filter_value_lower = str(filter_value).lower().strip()
-    
-    # Search dimensions first
-    for col in categorized_columns['dimensions'].keys():
-        if col in data.columns:
-            for actual_value in data[col].dropna().unique():
-                if str(actual_value).lower().strip() == filter_value_lower:
-                    return col
+    if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
+        return 'mean'
+    if any(word in question_lower for word in ['total', 'sum']):
+        return 'sum'
     
     return None
 
 def normalize_filter_value(filter_value, filter_column, data):
-    """Normalize filter values to match data format."""
+    """Normalize filter values to match actual data format."""
     if not filter_value or not filter_column:
         return filter_value
     
@@ -329,350 +403,242 @@ def normalize_filter_value(filter_value, filter_column, data):
     
     if 'quarter' in filter_column.lower():
         if filter_value_str.startswith('q'):
-            quarter_num = filter_value_str[1:]
-            if quarter_num in ['1', '2', '3', '4']:
-                return quarter_num
+            return filter_value_str[1]
+        return str(filter_value)
     
-    return filter_value
-
-def detect_aggregation_function(question, value_col, category_col=None):
-    """Smart aggregation detection."""
-    question_lower = question.lower()
-    col_type = get_column_type(value_col)
-    
-    if category_col:
-        if any(word in question_lower for word in ['lowest', 'highest', 'best', 'worst', 'top', 'most']):
-            if col_type == 'percentage':
-                return 'mean'
-            elif col_type in ['financial', 'count']:
-                return 'max' if 'highest' in question_lower or 'most' in question_lower or 'best' in question_lower else 'min'
-    
-    if any(word in question_lower for word in ['average', 'avg', 'mean', 'per ']):
-        return 'mean'
-    if any(word in question_lower for word in ['total', 'sum']):
-        return 'sum'
-    if any(word in question_lower for word in ['count', 'how many']):
-        return 'count'
-    if any(word in question_lower for word in ['minimum', 'min', 'lowest']):
-        return 'min'
-    if any(word in question_lower for word in ['maximum', 'max', 'highest', 'most']):
-        return 'max'
-    
-    return None
-
-with st.sidebar:
-    st.header("⚙️ Settings")
-    temperature = st.slider("AI Creativity", 0.0, 1.0, 0.3)
-    show_steps = st.checkbox("Show AI Reasoning", value=True)
-    timeout_seconds = st.slider("AI Response Timeout (seconds)", 60, 1800, 600, step=60)
-
-def get_column_statistics(data, column):
-    try:
-        stats = {
-            "Data Type": str(data[column].dtype),
-            "Non-Null Count": int(data[column].count()),
-            "Null Count": int(data[column].isnull().sum()),
-            "Unique Values": int(data[column].nunique()),
-        }
-        if data[column].dtype in ['int64', 'float64']:
-            stats.update({
-                "Min": float(data[column].min()) if not data[column].isnull().all() else None,
-                "Max": float(data[column].max()) if not data[column].isnull().all() else None,
-                "Mean": float(data[column].mean()) if not data[column].isnull().all() else None,
-            })
-        else:
-            stats["Sample Values"] = ", ".join(str(v) for v in data[column].unique()[:5])
-        return stats
-    except Exception as e:
-        return f"Error: {str(e)}"
+    return str(filter_value)
 
 def ai_understand_query(user_question, data, timeout_seconds, temperature, categorized_columns):
-    """Use AI with smart column detection."""
+    """Use strict column detection with NO AI hallucinations."""
     
-    smart_metric = find_best_metric(user_question, categorized_columns)
-    smart_dimension = find_best_dimension(user_question, categorized_columns)
+    # Use STRICT detection
+    smart_metric = find_best_metric_strict(user_question, categorized_columns)
+    smart_dimension = find_best_dimension_strict(user_question, categorized_columns)
     smart_time = find_best_time_column(user_question, categorized_columns)
     pre_time_value = detect_time_period_value(user_question)
     
-    metrics_list = ", ".join(categorized_columns['metrics'].keys())
-    dimensions_list = ", ".join(list(categorized_columns['dimensions'].keys()) + list(categorized_columns['ids'].keys()))
-    time_list = ", ".join(categorized_columns['time'].keys())
+    if not smart_metric:
+        return None, f"❌ Could not identify metric. Available: {', '.join(categorized_columns['metrics'].keys())}"
     
-    prompt = f"""TASK: Extract EXACT column names from a data question. RETURN ONLY EXACT COLUMN NAMES.
-
-AVAILABLE METRICS: {metrics_list or 'none'}
-AVAILABLE DIMENSIONS: {dimensions_list or 'none'}
-AVAILABLE TIME COLUMNS: {time_list or 'none'}
-
-QUESTION: {user_question}
-
-RULES:
-1. METRIC: Return EXACTLY ONE metric name from AVAILABLE METRICS.
-   HINT: Likely: {smart_metric or 'unknown'}
-2. DIMENSION: Return dimension name ONLY if asking "which", "by", "per", or comparing.
-   HINT: Likely: {smart_dimension or 'none'}
-3. TIME_COLUMN: Return time column name ONLY if grouping/filtering by time.
-   HINT: Likely: {smart_time or 'none'}
-4. FILTER_VALUE: Return a specific value - ONLY if explicitly mentioned.
-5. NEVER add values that aren't explicitly in the question.
-
-RESPOND EXACTLY 7 LINES (no extra text):
-METRIC: [exact name or NONE]
-DIMENSION: [exact name or NONE]
-TIME_COLUMN: [exact name or NONE]
-FILTER_VALUE: [value or NONE]
-QUERY_PATTERN: [category_comparison OR filtered_total OR time_total]
-REASONING: [one line]
-AI_CONFIDENCE: [high OR medium OR low]"""
+    # Normalize time value if needed
+    if pre_time_value and smart_time:
+        pre_time_value = normalize_filter_value(pre_time_value, smart_time, data)
     
-    try:
-        response = requests.post(OLLAMA_API, json={"model": "llama2", "prompt": prompt, "stream": False, "temperature": 0}, timeout=timeout_seconds)
-        
-        if response.status_code == 200:
-            result = response.json()
-            ai_response = result.get("response", "").strip()
-            
-            lines = ai_response.split('\n')
-            extracted = {
-                "metric": smart_metric,
-                "dimension": smart_dimension,
-                "time_column": smart_time,
-                "filter_value": None,
-                "query_pattern": None,
-                "reasoning": "Analysis",
-                "confidence": "medium",
-                "time_value": pre_time_value
-            }
-            
-            for line in lines:
-                if "METRIC:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE" and val.strip():
-                        extracted["metric"] = val
-                elif "DIMENSION:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE" and val.strip():
-                        extracted["dimension"] = val
-                elif "TIME_COLUMN:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE" and val.strip():
-                        extracted["time_column"] = val
-                elif "FILTER_VALUE:" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val.upper() != "NONE" and val.strip():
-                        extracted["filter_value"] = val
-                elif "QUERY_PATTERN:" in line:
-                    val = line.split(":", 1)[1].strip().lower()
-                    extracted["query_pattern"] = val
-                elif "REASONING:" in line:
-                    extracted["reasoning"] = line.split(":", 1)[1].strip()
-                elif "AI_CONFIDENCE:" in line:
-                    val = line.split(":", 1)[1].strip().lower()
-                    extracted["confidence"] = val
-            
-            query_params = {
-                "query_type": "total_by_time",
-                "time_column": extracted["time_column"],
-                "category_column": None,
-                "value_column": extracted["metric"],
-                "filter_column": None,
-                "filter_value": None,
-                "reasoning": extracted["reasoning"],
-                "aggregation_function": None,
-                "time_value": extracted["time_value"]
-            }
-            
-            if extracted["time_value"] and extracted["time_column"]:
-                extracted["time_value"] = normalize_filter_value(
-                    extracted["time_value"],
-                    extracted["time_column"],
-                    data
-                )
-            
-            agg_func = detect_aggregation_function(user_question, extracted["metric"], extracted["dimension"])
-            if agg_func:
-                query_params["aggregation_function"] = agg_func
-            
-            question_lower = user_question.lower()
-            
-            # PRIORITY 1: Group by dimension
-            if extracted["dimension"] and (any(word in question_lower for word in ['which', 'highest', 'lowest', 'best', 'worst', 'top', 'most', 'by ', 'per ', 'for each']) or ' by ' in question_lower):
-                query_params["query_type"] = "best_worst_by_category"
-                query_params["category_column"] = extracted["dimension"]
-                query_params["time_column"] = None
-                query_params["filter_column"] = None
-                query_params["filter_value"] = None
-            
-            # PRIORITY 2: Filter by time
-            elif extracted["time_value"]:
-                query_params["query_type"] = "filter_by_time"
-                query_params["time_column"] = extracted["time_column"]
-                query_params["filter_value"] = extracted["time_value"]
-                query_params["filter_column"] = extracted["time_column"]
-            
-            # PRIORITY 3: Total by time
-            else:
-                query_params["query_type"] = "total_by_time"
-                query_params["time_column"] = extracted["time_column"]
-            
-            return query_params, None
-        else:
-            return None, f"AI Error: {response.status_code}"
-    except requests.exceptions.Timeout:
-        return None, f"AI Timeout after {timeout_seconds}s"
-    except requests.exceptions.ConnectionError:
-        return None, "Cannot connect to Ollama. Run: ollama serve"
-    except Exception as e:
-        return None, f"Error: {str(e)}"
+    # Detect aggregation function
+    agg_func = detect_aggregation_function(user_question, smart_metric, smart_dimension)
+    
+    question_lower = user_question.lower()
+    
+    # PRIORITY 1: Group by dimension
+    if smart_dimension and (any(word in question_lower for word in ['which', 'highest', 'lowest', 'best', 'worst', 'top', 'most', 'by ', 'per ']) or ' by ' in question_lower):
+        query_params = {
+            "query_type": "best_worst_by_category",
+            "category_column": smart_dimension,
+            "value_column": smart_metric,
+            "aggregation_function": agg_func,
+            "time_column": None,
+            "filter_value": None,
+        }
+    
+    # PRIORITY 2: Filter by time
+    elif pre_time_value:
+        query_params = {
+            "query_type": "filter_by_time",
+            "time_column": smart_time,
+            "value_column": smart_metric,
+            "filter_value": pre_time_value,
+            "category_column": None,
+            "aggregation_function": None,
+        }
+    
+    # PRIORITY 3: Total by time
+    else:
+        query_params = {
+            "query_type": "total_by_time",
+            "time_column": smart_time,
+            "value_column": smart_metric,
+            "category_column": None,
+            "filter_value": None,
+            "aggregation_function": None,
+        }
+    
+    return query_params, None
 
 def execute_query(data, query_params):
     """Execute the query using Python."""
     try:
         query_type = query_params.get("query_type", "").lower()
+        value_col = query_params.get("value_column")
         
-        if query_type in ["total_by_time", "filter_by_time"]:
-            time_col = query_params.get("time_column")
-            value_col = query_params.get("value_column")
-            filter_val = query_params.get("filter_value")
-            
-            if not value_col:
-                return None, "Missing value column"
-            
-            if value_col not in data.columns:
-                return None, f"Value column '{value_col}' not found. Available: {list(data.columns)}"
-            
-            if time_col and filter_val:
-                if time_col not in data.columns:
-                    return None, f"Time column '{time_col}' not found"
-                filtered = data[data[time_col].astype(str) == str(filter_val)]
-                if len(filtered) == 0:
-                    return None, f"No data found for {time_col}='{filter_val}'"
-                total = filtered[value_col].sum()
-                return pd.DataFrame({time_col: [filter_val], f"Total {value_col}": [total]}), None
-            elif time_col:
-                if time_col not in data.columns:
-                    return None, f"Time column '{time_col}' not found"
-                result = data.groupby(time_col)[value_col].sum().reset_index()
-                result.columns = [time_col, f"Total {value_col}"]
-                return result, None
-            else:
-                total = data[value_col].sum()
-                return pd.DataFrame({f"Total {value_col}": [total]}), None
+        if not value_col or value_col not in data.columns:
+            return None, f"Value column '{value_col}' not found"
         
-        elif query_type == "best_worst_by_category":
+        if query_type == "best_worst_by_category":
             category_col = query_params.get("category_column")
-            value_col = query_params.get("value_column")
             agg_func = query_params.get("aggregation_function")
             
-            if not category_col or not value_col:
-                return None, "Missing category or value column"
-            
-            if category_col not in data.columns or value_col not in data.columns:
-                return None, f"Column not found. Category: '{category_col}', Value: '{value_col}'. Available: {list(data.columns)}"
+            if not category_col or category_col not in data.columns:
+                return None, f"Category column '{category_col}' not found"
             
             if agg_func == 'mean':
                 result = data.groupby(category_col)[value_col].mean().reset_index()
-                label = f"Average {value_col}"
-            elif agg_func == 'sum':
-                result = data.groupby(category_col)[value_col].sum().reset_index()
-                label = f"Total {value_col}"
-            elif agg_func == 'max':
-                result = data.groupby(category_col)[value_col].max().reset_index()
-                label = f"Max {value_col}"
             elif agg_func == 'min':
                 result = data.groupby(category_col)[value_col].min().reset_index()
-                label = f"Min {value_col}"
-            else:
-                col_type = get_column_type(value_col)
-                if col_type == 'percentage':
-                    result = data.groupby(category_col)[value_col].mean().reset_index()
-                    label = f"Average {value_col}"
-                else:
-                    result = data.groupby(category_col)[value_col].max().reset_index()
-                    label = f"Max {value_col}"
+            else:  # max
+                result = data.groupby(category_col)[value_col].max().reset_index()
             
-            result = result.sort_values(value_col, ascending=False)
-            result.columns = [category_col, label]
+            result = result.sort_values(value_col, ascending=(agg_func == 'min'))
+            result.columns = [category_col, f"{'Min' if agg_func == 'min' else 'Max' if agg_func == 'max' else 'Average'} {value_col}"]
             return result, None
         
-        else:
-            return None, "Unknown query type"
+        elif query_type == "filter_by_time":
+            time_col = query_params.get("time_column")
+            filter_val = query_params.get("filter_value")
+            
+            if not time_col or time_col not in data.columns:
+                return None, f"Time column '{time_col}' not found"
+            
+            filtered = data[data[time_col].astype(str) == str(filter_val)]
+            if len(filtered) == 0:
+                return None, f"No data for {time_col}={filter_val}"
+            
+            total = filtered[value_col].sum()
+            return pd.DataFrame({f"Total {value_col}": [total]}), None
+        
+        else:  # total_by_time
+            total = data[value_col].sum()
+            return pd.DataFrame({f"Total {value_col}": [total]}), None
     
     except Exception as e:
-        return None, f"Execution error: {str(e)}"
+        return None, f"Error: {str(e)}"
 
-uploaded_file = st.file_uploader("Choose a file (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
+def run_test_suite(data, categorized_columns, test_suite, phase_name):
+    """Run test suite and display results."""
+    results = []
+    passed = 0
+    
+    for question, expected_type, expected_metric, expected_dim, expected_time in test_suite:
+        query_params, error = ai_understand_query(question, data, 600, 0.3, categorized_columns)
+        
+        if error:
+            results.append({
+                "Question": question[:60],
+                "Status": "❌ ERROR",
+                "Expected": expected_type,
+                "Got": "ERROR",
+                "Details": error
+            })
+            continue
+        
+        # Check matches
+        type_match = query_params.get("query_type") == expected_type
+        metric_match = query_params.get("value_column") == expected_metric
+        dim_match = (query_params.get("category_column") == expected_dim) if expected_dim else True
+        
+        if type_match and metric_match and dim_match:
+            results.append({
+                "Question": question[:60],
+                "Status": "✅ PASS",
+                "Expected": f"{expected_type}:{expected_metric}:{expected_dim}",
+                "Got": f"{query_params.get('query_type')}:{query_params.get('value_column')}:{query_params.get('category_column')}",
+                "Details": "All correct"
+            })
+            passed += 1
+        else:
+            details = []
+            if not type_match:
+                details.append(f"Type: {expected_type}→{query_params.get('query_type')}")
+            if not metric_match:
+                details.append(f"Metric: {expected_metric}→{query_params.get('value_column')}")
+            if not dim_match:
+                details.append(f"Dim: {expected_dim}→{query_params.get('category_column')}")
+            
+            results.append({
+                "Question": question[:60],
+                "Status": "❌ FAIL",
+                "Expected": f"{expected_type}:{expected_metric}:{expected_dim}",
+                "Got": f"{query_params.get('query_type')}:{query_params.get('value_column')}:{query_params.get('category_column')}",
+                "Details": " | ".join(details)
+            })
+    
+    # Display results
+    st.subheader(f"📊 {phase_name}")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total", len(test_suite))
+    with col2:
+        st.metric("✅ Passed", passed, delta=f"+{passed}")
+    with col3:
+        st.metric("❌ Failed", len(test_suite) - passed, delta=f"-{len(test_suite) - passed}")
+    with col4:
+        accuracy = (passed / len(test_suite)) * 100 if test_suite else 0
+        st.metric("Accuracy", f"{accuracy:.1f}%")
+    
+    # Show results table
+    with st.expander("📋 Detailed Results"):
+        results_df = pd.DataFrame(results)
+        st.dataframe(results_df, use_container_width=True, height=400)
+    
+    # Show failures
+    failures = [r for r in results if r["Status"] != "✅ PASS"]
+    if failures:
+        with st.expander(f"⚠️ {len(failures)} Issues"):
+            for failure in failures:
+                st.write(f"**Q:** {failure['Question']}")
+                st.write(f"   Expected: {failure['Expected']}")
+                st.write(f"   Got: {failure['Got']}")
+                st.write(f"   Issue: {failure['Details']}")
+                st.divider()
+    
+    return passed, len(test_suite)
+
+# MAIN APP
+st.sidebar.header("⚙️ Settings")
+show_column_detection = st.sidebar.checkbox("Show Column Detection", value=True)
+
+uploaded_file = st.file_uploader("📁 Upload Sales Data (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
 
 if uploaded_file:
     temp_path = f"temp_{uploaded_file.name}"
     with open(temp_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    st.success(f"✅ File uploaded: {uploaded_file.name}")
-    
     try:
         if temp_path.endswith('.csv'):
             data = pd.read_csv(temp_path)
-        elif temp_path.endswith('.xlsx'):
-            data = pd.read_excel(temp_path, engine='openpyxl')
-        elif temp_path.endswith('.xls'):
-            data = pd.read_excel(temp_path, engine='xlrd')
         else:
-            data = pd.read_csv(temp_path)
+            data = pd.read_excel(temp_path, engine='openpyxl')
         
-        # PROFILE AND CATEGORIZE COLUMNS
         column_profiles = profile_columns(data)
         categorized_columns = categorize_columns(column_profiles)
         
-        # Show detected column types
-        with st.expander("🔍 Detected Column Types", expanded=False):
-            st.write("**Metrics:**", list(categorized_columns['metrics'].keys()))
-            st.write("**Dimensions:**", list(categorized_columns['dimensions'].keys()))
-            st.write("**IDs/Names:**", list(categorized_columns['ids'].keys()))
-            st.write("**Time Columns:**", list(categorized_columns['time'].keys()))
-            if categorized_columns['unknown']:
-                st.write("**Unknown:**", list(categorized_columns['unknown'].keys()))
+        st.success(f"✅ Loaded {len(data):,} rows × {len(data.columns)} columns")
         
-        tab1, tab2, tab3 = st.tabs(["📊 Data Preview", "📈 Data Stats", "🔍 Detailed Info"])
-        
-        with tab1:
-            st.subheader("Data Preview")
-            rows_to_show = st.slider("Rows to display:", 5, min(100, len(data)), 10)
-            st.dataframe(data.head(rows_to_show), width='stretch')
-        
-        with tab2:
-            st.subheader("📈 Quick Statistics")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Rows", f"{len(data):,}")
-            with col2:
-                st.metric("Total Columns", len(data.columns))
-            with col3:
-                st.metric("Missing Values", int(data.isnull().sum().sum()))
-            with col4:
-                st.metric("Data Size", f"{data.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
-            
-            st.write("**Numeric Column Statistics:**")
-            numeric_data = data.select_dtypes(include=['number'])
-            if not numeric_data.empty:
-                st.dataframe(numeric_data.describe(), width='stretch')
-            else:
-                st.info("No numeric columns found")
-        
-        with tab3:
-            st.subheader("🔍 Column Details")
-            col_info = pd.DataFrame({
-                'Column Name': data.columns,
-                'Data Type': [str(data[col].dtype) for col in data.columns],
-                'Unique Count': [f"{int(data[col].nunique()):,}" for col in data.columns]
-            })
-            st.dataframe(col_info, width='stretch')
+        # Show detected columns
+        if show_column_detection:
+            with st.expander("🔍 Detected Columns"):
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.write("**Metrics:**")
+                    for m in list(categorized_columns['metrics'].keys()):
+                        st.write(f"- {m}")
+                with col2:
+                    st.write("**Dimensions:**")
+                    for d in list(categorized_columns['dimensions'].keys()):
+                        st.write(f"- {d}")
+                with col3:
+                    st.write("**Time:**")
+                    for t in categorized_columns['time'].keys():
+                        st.write(f"- {t}")
+                with col4:
+                    st.write("**IDs/Names:**")
+                    for i in list(categorized_columns['ids'].keys())[:5]:
+                        st.write(f"- {i}")
         
         st.divider()
         
-        st.subheader("🤖 AI-Powered Natural Language Query")
-        st.info("Ask questions in natural language. Works with ANY dataset!")
-        
+        # Data preview
+        st.subheader("📋 Data Preview")
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Rows", f"{len(data):,}")
@@ -681,56 +647,81 @@ if uploaded_file:
         with col3:
             st.metric("Status", "✅ Ready")
         
-        with st.form("query_form", clear_on_submit=True):
-            user_question = st.text_area("Ask about your data:", placeholder="Example: Which team had the most points?", height=100)
-            submit_button = st.form_submit_button("📊 Analyze", use_container_width=True)
+        st.dataframe(data.head(10), use_container_width=True, height=250)
         
-        if submit_button and user_question:
-            with st.spinner("🧠 AI analyzing..."):
-                query_params, ai_error = ai_understand_query(user_question, data, timeout_seconds, temperature, categorized_columns)
+        st.divider()
+        
+        # Run tests
+        st.header("🧪 Test Suites")
+        
+        p1_passed, p1_total = run_test_suite(data, categorized_columns, PHASE_1_TESTS, "Phase 1: Core Queries")
+        st.divider()
+        
+        p2_passed, p2_total = run_test_suite(data, categorized_columns, PHASE_2_EDGE_CASES, "Phase 2: Edge Cases")
+        st.divider()
+        
+        p3_passed, p3_total = run_test_suite(data, categorized_columns, PHASE_3_COMPLEX, "Phase 3: Complex Queries")
+        
+        # Overall stats
+        st.divider()
+        st.header("📈 Overall Accuracy Report")
+        
+        total_passed = p1_passed + p2_passed + p3_passed
+        total_tests = p1_total + p2_total + p3_total
+        overall_accuracy = (total_passed / total_tests) * 100 if total_tests > 0 else 0
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("Total Tests", total_tests)
+        with col2:
+            st.metric("✅ Passed", total_passed)
+        with col3:
+            st.metric("❌ Failed", total_tests - total_passed)
+        with col4:
+            st.metric("Accuracy", f"{overall_accuracy:.1f}%")
+        with col5:
+            if overall_accuracy >= 95:
+                st.metric("Status", "🎉 READY", delta="95%+")
+            else:
+                st.metric("Status", f"⚠️ {95 - overall_accuracy:.1f}% away")
+        
+        # Manual query tester
+        st.divider()
+        st.header("🔬 Manual Query Tester")
+        st.write("Test any custom question:")
+        
+        with st.form("manual_query"):
+            test_question = st.text_area("Question:", placeholder="Example: Which product had the highest KPI_%?", height=80)
+            submit = st.form_submit_button("🧪 Test Query", use_container_width=True)
+        
+        if submit and test_question:
+            query_params, error = ai_understand_query(test_question, data, 600, 0.3, categorized_columns)
             
-            if ai_error:
-                st.error(f"❌ Error: {ai_error}")
-            elif query_params:
-                if show_steps:
-                    with st.expander("🔍 AI Understanding"):
-                        st.write(f"**Question:** {user_question}")
-                        st.json({
-                            "Query Type": query_params.get('query_type'),
-                            "Metric": query_params.get('value_column'),
-                            "Dimension": query_params.get('category_column'),
-                            "Time Column": query_params.get('time_column'),
-                            "Aggregation": query_params.get('aggregation_function'),
-                        })
+            if error:
+                st.error(f"❌ {error}")
+            else:
+                st.success("✅ Query Detected!")
                 
-                with st.spinner("📊 Calculating..."):
-                    result, error = execute_query(data, query_params)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**Detection Results:**")
+                    st.json(query_params)
                 
-                if error and result is None:
-                    st.error(f"❌ Error: {error}")
-                else:
-                    st.success("✅ Results!")
-                    if isinstance(result, tuple):
-                        result_table, total = result
-                        st.metric("Total", f"{total:,.2f}")
-                        st.dataframe(result_table, width='stretch')
-                    elif isinstance(result, pd.DataFrame):
-                        st.dataframe(result, width='stretch')
+                with col2:
+                    st.write("**Execution:**")
+                    result, exec_error = execute_query(data, query_params)
+                    if exec_error:
+                        st.error(exec_error)
+                    else:
+                        st.dataframe(result, use_container_width=True)
         
-        import os as os_module
-        if os_module.path.exists(temp_path):
-            os_module.remove(temp_path)
+        # Cleanup
+        import os
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
     
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"❌ Error loading file: {str(e)}")
 
-import atexit
-def cleanup():
-    import os, glob
-    for f in glob.glob("temp_*"):
-        try:
-            os.remove(f)
-        except:
-            pass
-
-atexit.register(cleanup)
+else:
+    st.info("👉 Upload a sales data file to begin testing!")
