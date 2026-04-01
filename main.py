@@ -63,27 +63,33 @@ def profile_columns(data):
             'inferred_type': None,
         }
         
-        # PRIORITY 1: Exact TIME column names
+        # ===== PRIORITY 1: Exact TIME column names =====
         if col in ['Date', 'Year', 'Quarter', 'Month', 'Week', 'Day', 'Timestamp']:
             profile['inferred_type'] = 'time'
             column_profiles[col] = profile
             continue
         
-        # PRIORITY 2: Dimension columns (by name)
-        dimension_keywords = [
-            'geo', 'country', 'region', 'location', 'state',
-            'product', 'category', 'brand',
-            'customer', 'client', 'account',
-            'sales_rep', 'rep', 'agent', 'employee', 'staff',
-            'team', 'player', 'athlete'
-        ]
-        
-        if any(keyword in col_lower for keyword in dimension_keywords):
+        # ===== PRIORITY 2: Known DIMENSION columns =====
+        # These are the actual dimension column names from the data
+        known_dimensions = ['Geo', 'Country', 'Sales_Rep', 'Customer', 'Category', 'Product']
+        if col in known_dimensions:
             profile['inferred_type'] = 'dimension'
             column_profiles[col] = profile
             continue
         
-        # PRIORITY 3: Metric columns (numeric)
+        # ===== PRIORITY 3: Known METRIC columns =====
+        # These are the actual metric column names from the data
+        known_metrics = [
+            'Revenue', 'Spend', 'Savings', 'Profit', 'Marketing_Spend',
+            'KPI_%', 'Profit_Margin_%', 'Return_Rate_%', 'Employee_Engagement_%', 'Customer_Satisfaction_Score',
+            'Units_Sold'
+        ]
+        if col in known_metrics:
+            profile['inferred_type'] = 'metric'
+            column_profiles[col] = profile
+            continue
+        
+        # ===== PRIORITY 4: Infer from keywords =====
         if dtype in ['int64', 'float64']:
             profile['numeric'] = True
             profile['min'] = float(data[col].min()) if not data[col].isnull().all() else None
@@ -105,7 +111,7 @@ def profile_columns(data):
             column_profiles[col] = profile
             continue
         
-        # PRIORITY 4: Other strings (might be dimensions)
+        # ===== PRIORITY 5: Other strings (dimensions) =====
         if dtype == 'object':
             profile['numeric'] = False
             cardinality = profile['unique_count']
@@ -189,6 +195,12 @@ def find_metric(question, available_metrics):
             if 'KPI' in m:
                 return m
     
+    # Special case: "units" or "sold" -> "Units_Sold"
+    if 'units' in question_lower or 'sold' in question_lower:
+        for m in available_metrics:
+            if 'Units' in m or 'Sold' in m:
+                return m
+    
     # Default: exact substring match
     for m in available_metrics:
         if m.lower() in question_lower:
@@ -210,6 +222,9 @@ def find_dimension(question, available_dims):
     ])
     
     if not has_dim_keyword:
+        return None
+    
+    if not available_dims:
         return None
     
     question_lower = question.lower()
@@ -544,11 +559,11 @@ if uploaded_file:
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.write("**Metrics:**")
-                    for m in list(categorized_cols['metrics'].keys())[:10]:
+                    for m in list(categorized_cols['metrics'].keys())[:15]:
                         st.write(f"- {m}")
                 with col2:
                     st.write("**Dimensions:**")
-                    for d in list(categorized_cols['dimensions'].keys())[:10]:
+                    for d in list(categorized_cols['dimensions'].keys())[:15]:
                         st.write(f"- {d}")
                 with col3:
                     st.write("**Time:**")
