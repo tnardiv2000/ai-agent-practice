@@ -107,7 +107,7 @@ def profile_columns(data):
             total_rows = len(data)
             cardinality_ratio = cardinality / total_rows if total_rows > 0 else 0
             
-            # Check column name FIRST - if it looks like a dimension, treat it as such
+            # Check column name FIRST
             is_likely_dimension = any(word in col_lower for word in [
                 'team', 'player', 'product', 'customer', 'country', 'region', 'sport', 'league',
                 'category', 'type', 'group', 'name', 'sales_rep', 'rep', 'agent', 'user',
@@ -130,12 +130,10 @@ def profile_columns(data):
                 if any(word in col_lower for word in ['region', 'geo', 'location', 'country']):
                     profile['synonyms'].extend(['region', 'geo', 'location', 'country', 'state'])
             
-            # High cardinality strings (likely ID, name, or description)
             elif cardinality_ratio > 0.5:
                 profile['inferred_type'] = 'id_or_name'
                 profile['synonyms'].extend(['name', 'id', 'identifier', 'description', 'title'])
             
-            # Low cardinality strings (likely a category/dimension)
             elif cardinality <= 100:
                 profile['inferred_type'] = 'dimension'
                 profile['synonyms'].extend(['category', 'type', 'group', 'classification', 'segment'])
@@ -200,19 +198,19 @@ def smart_column_match(question, available_columns):
     question_lower = question.lower()
     question_words = re.findall(r'\b\w+\b', question_lower)
     
-    # PHASE 1: Exact full column name match (highest priority)
+    # PHASE 1: Exact full column name match
     for col in available_columns:
         col_lower = col.lower()
         if col_lower in question_lower:
             return col
     
-    # PHASE 2: Partial match with underscores/spaces (high priority)
+    # PHASE 2: Partial match with underscores/spaces
     for col in available_columns:
         col_clean = col.lower().replace('_', ' ')
         if col_clean in question_lower:
             return col
     
-    # PHASE 3: Match longer column names FIRST (more specific)
+    # PHASE 3: Match longer column names FIRST
     sorted_cols = sorted(available_columns, key=lambda x: len(x), reverse=True)
     for col in sorted_cols:
         col_lower = col.lower()
@@ -229,37 +227,31 @@ def find_best_metric_strict(question, categorized_columns):
     question_lower = question.lower()
     available_metrics = list(categorized_columns['metrics'].keys())
     
-    # SPECIAL CASE: "margin" or "profit margin" should match "Profit_Margin_%"
     if 'margin' in question_lower:
         for metric in available_metrics:
             if 'Profit_Margin' in metric:
                 return metric
     
-    # SPECIAL CASE: "engagement" should match "Employee_Engagement_%"
     if 'engagement' in question_lower:
         for metric in available_metrics:
             if 'Engagement' in metric:
                 return metric
     
-    # SPECIAL CASE: "return" or "return rate" should match "Return_Rate_%"
     if 'return' in question_lower:
         for metric in available_metrics:
             if 'Return_Rate' in metric:
                 return metric
     
-    # SPECIAL CASE: "marketing" should match "Marketing_Spend"
     if 'marketing' in question_lower:
         for metric in available_metrics:
             if 'Marketing' in metric:
                 return metric
     
-    # SPECIAL CASE: "kpi" should match "KPI_%"
     if 'kpi' in question_lower:
         for metric in available_metrics:
             if 'KPI' in metric:
                 return metric
     
-    # Default: use smart matching
     return smart_column_match(question, available_metrics)
 
 def find_best_dimension_strict(question, categorized_columns):
@@ -267,7 +259,6 @@ def find_best_dimension_strict(question, categorized_columns):
     if not question:
         return None
     
-    # Only search for dimension if question has dimension keywords
     has_dimension_keyword = any(word in question.lower() for word in [
         'which', 'by ', 'per ', 'for each', 'by each', 'top ', 'best ', 'worst ', 
         'highest', 'lowest', 'most', 'least'
@@ -284,33 +275,37 @@ def find_best_dimension_strict(question, categorized_columns):
     return smart_column_match(question, available_dims)
 
 def find_best_time_column(question, categorized_columns):
-    """Smart time column detection."""
+    """Smart time column detection - prioritize Year/Quarter over Date."""
     if not categorized_columns['time'] or not question:
         return None
     
     question_lower = question.lower()
+    time_cols = list(categorized_columns['time'].keys())
     
-    # Check for Quarter mentions
+    # PRIORITY 1: Quarter mentions - match Quarter column first
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
-        for col in categorized_columns['time'].keys():
+        for col in time_cols:
             if 'quarter' in col.lower():
                 return col
-    
-    # Check for Month mentions
-    if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
-        for col in categorized_columns['time'].keys():
-            if 'month' in col.lower():
-                return col
-    
-    # Check for Year mentions
-    if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
-        for col in categorized_columns['time'].keys():
+        for col in time_cols:
             if 'year' in col.lower():
                 return col
     
-    # Default to first time column
-    if categorized_columns['time']:
-        return list(categorized_columns['time'].keys())[0]
+    # PRIORITY 2: Month mentions
+    if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
+        for col in time_cols:
+            if 'month' in col.lower():
+                return col
+    
+    # PRIORITY 3: Year mentions - match Year column first
+    if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
+        for col in time_cols:
+            if 'year' in col.lower():
+                return col
+    
+    # Default to first available time column
+    if time_cols:
+        return time_cols[0]
     
     return None
 
@@ -319,12 +314,10 @@ def detect_time_period_value(question):
     question_lower = question.lower()
     words = re.findall(r'\b\w+\b', question_lower)
     
-    # Check for quarters
     for word in words:
         if word in ['q1', 'q2', 'q3', 'q4']:
-            return word[1]  # Return just the number
+            return word[1]
     
-    # Check for full month names
     full_months = {
         'january': 'January', 'february': 'February', 'march': 'March',
         'april': 'April', 'may': 'May', 'june': 'June',
@@ -336,7 +329,6 @@ def detect_time_period_value(question):
         if word in full_months:
             return full_months[word]
     
-    # Check for month abbreviations
     month_abbrs = {
         'jan': 'January', 'feb': 'February', 'mar': 'March', 'apr': 'April',
         'may': 'May', 'jun': 'June', 'jul': 'July', 'aug': 'August',
@@ -347,7 +339,6 @@ def detect_time_period_value(question):
         if word in month_abbrs:
             return month_abbrs[word]
     
-    # Check for years
     for word in words:
         if re.match(r'^(19|20)\d{2}$', word):
             return word
@@ -410,7 +401,6 @@ def normalize_filter_value(filter_value, filter_column, data):
 def ai_understand_query(user_question, data, timeout_seconds, temperature, categorized_columns):
     """Use strict column detection with NO AI hallucinations."""
     
-    # Use STRICT detection
     smart_metric = find_best_metric_strict(user_question, categorized_columns)
     smart_dimension = find_best_dimension_strict(user_question, categorized_columns)
     smart_time = find_best_time_column(user_question, categorized_columns)
@@ -419,16 +409,13 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
     if not smart_metric:
         return None, f"❌ Could not identify metric. Available: {', '.join(categorized_columns['metrics'].keys())}"
     
-    # Normalize time value if needed
     if pre_time_value and smart_time:
         pre_time_value = normalize_filter_value(pre_time_value, smart_time, data)
     
-    # Detect aggregation function
     agg_func = detect_aggregation_function(user_question, smart_metric, smart_dimension)
     
     question_lower = user_question.lower()
     
-    # PRIORITY 1: Group by dimension
     if smart_dimension and (any(word in question_lower for word in ['which', 'highest', 'lowest', 'best', 'worst', 'top', 'most', 'by ', 'per ']) or ' by ' in question_lower):
         query_params = {
             "query_type": "best_worst_by_category",
@@ -439,7 +426,6 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
             "filter_value": None,
         }
     
-    # PRIORITY 2: Filter by time
     elif pre_time_value and smart_time:
         query_params = {
             "query_type": "filter_by_time",
@@ -450,7 +436,6 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
             "aggregation_function": None,
         }
     
-    # PRIORITY 3: Total by time
     else:
         query_params = {
             "query_type": "total_by_time",
@@ -489,15 +474,19 @@ def execute_query_with_validation(data, query_params):
             result = result.sort_values(value_col, ascending=(agg_func == 'min'))
             result.columns = [category_col, f"{'Min' if agg_func == 'min' else 'Max' if agg_func == 'max' else 'Average'} {value_col}"]
             
-            # VALIDATION: Simple validation
+            top_category = result.iloc[0][category_col] if len(result) > 0 else None
+            top_value = result.iloc[0][result.columns[1]] if len(result) > 0 else None
+            
             validation = {
                 "query_type": query_type,
                 "category_col": category_col,
                 "value_col": value_col,
-                "agg_func": agg_func,
-                "top_result": dict(result.iloc[0]) if len(result) > 0 else None,
+                "agg_func": agg_func or "max",
+                "top_category": top_category,
+                "top_value": round(top_value, 2) if isinstance(top_value, (int, float)) else top_value,
                 "total_rows": len(data),
                 "total_groups": len(result),
+                "instruction": f"✅ Verify: Pivot table with '{category_col}' as rows, '{value_col}' as values ({agg_func or 'MAX'}). Top result: {top_category}: {round(top_value, 2) if isinstance(top_value, (int, float)) else top_value}",
             }
             
             return result, None, validation
@@ -510,13 +499,14 @@ def execute_query_with_validation(data, query_params):
                 return None, f"Time column '{time_col}' not found", None
             
             filtered = data[data[time_col].astype(str) == str(filter_val)]
+            
             if len(filtered) == 0:
-                return None, f"No data for {time_col}={filter_val}. Available values: {sorted(data[time_col].unique())}", None
+                available_vals = sorted(data[time_col].dropna().unique())
+                return None, f"No data for {time_col}={filter_val}. Available values: {available_vals}", None
             
             total = filtered[value_col].sum()
             result = pd.DataFrame({f"Total {value_col}": [round(total, 2)]})
             
-            # Get first dimension column for breakdown
             dim_cols = [c for c in data.columns if c not in [time_col, value_col] and data[c].dtype == 'object']
             breakdown = {}
             if dim_cols:
@@ -531,7 +521,7 @@ def execute_query_with_validation(data, query_params):
                 "rows_included": len(filtered),
                 "rows_total": len(data),
                 "breakdown": breakdown,
-                "sample_records": filtered.head(3).to_dict('records'),
+                "instruction": f"✅ Verify: In Excel, filter {time_col} = {filter_val}, SUM {value_col}. Should equal {round(total, 2)}",
             }
             
             return result, None, validation
@@ -540,7 +530,6 @@ def execute_query_with_validation(data, query_params):
             total = data[value_col].sum()
             result = pd.DataFrame({f"Total {value_col}": [round(total, 2)]})
             
-            # Breakdown by time period
             time_col = query_params.get("time_column")
             breakdown = {}
             if time_col and time_col in data.columns:
@@ -553,6 +542,7 @@ def execute_query_with_validation(data, query_params):
                 "total_rows": len(data),
                 "breakdown": breakdown,
                 "null_values": int(data[value_col].isnull().sum()),
+                "instruction": f"✅ Verify: SUM all {value_col} column. Should equal {round(total, 2)}",
             }
             
             return result, None, validation
@@ -574,16 +564,14 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
                 "Status": "❌ ERROR",
                 "Expected": expected_type,
                 "Got": "ERROR",
-                "Execution": "N/A",
+                "Execution": error[:40],
             })
             continue
         
-        # Check matches
         type_match = query_params.get("query_type") == expected_type
         metric_match = query_params.get("value_column") == expected_metric
         dim_match = (query_params.get("category_column") == expected_dim) if expected_dim else True
         
-        # Execute query to verify it works
         exec_result, exec_error, validation = execute_query_with_validation(data, query_params)
         
         execution_ok = exec_error is None and exec_result is not None
@@ -606,7 +594,7 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
             if not dim_match:
                 issue_list.append(f"Dim")
             if not execution_ok:
-                issue_list.append(f"Exec: {exec_error[:30] if exec_error else 'No result'}")
+                issue_list.append(f"Exec")
             
             results.append({
                 "Question": question[:50],
@@ -616,7 +604,6 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
                 "Execution": " | ".join(issue_list) if issue_list else "Unknown",
             })
     
-    # Display results
     st.subheader(f"📊 {phase_name}")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -629,7 +616,6 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
         accuracy = (passed / len(test_suite)) * 100 if test_suite else 0
         st.metric("Accuracy", f"{accuracy:.1f}%")
     
-    # Show results table
     with st.expander("📋 Detailed Results"):
         results_df = pd.DataFrame(results)
         st.dataframe(results_df, use_container_width=True, height=300)
@@ -658,7 +644,6 @@ if uploaded_file:
         
         st.success(f"✅ Loaded {len(data):,} rows × {len(data.columns)} columns")
         
-        # Show detected columns
         if show_column_detection:
             with st.expander("🔍 Detected Columns"):
                 col1, col2, col3, col4 = st.columns(4)
@@ -683,7 +668,6 @@ if uploaded_file:
         
         st.divider()
         
-        # Data preview
         st.subheader("📋 Data Preview")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -697,7 +681,6 @@ if uploaded_file:
         
         st.divider()
         
-        # Run tests
         st.header("🧪 Test Suites")
         
         p1_passed, p1_total = run_test_suite_with_execution(data, categorized_columns, PHASE_1_TESTS, "Phase 1: Core Queries")
@@ -708,7 +691,6 @@ if uploaded_file:
         
         p3_passed, p3_total = run_test_suite_with_execution(data, categorized_columns, PHASE_3_COMPLEX, "Phase 3: Complex Queries")
         
-        # Overall stats
         st.divider()
         st.header("📈 Overall Accuracy Report")
         
@@ -731,10 +713,9 @@ if uploaded_file:
             else:
                 st.metric("Status", f"⚠️ {95 - overall_accuracy:.1f}% away")
         
-        # Manual query tester
         st.divider()
         st.header("🔬 Manual Query Tester")
-        st.write("Test any custom question:")
+        st.write("Test any custom question and verify against Excel:")
         
         with st.form("manual_query"):
             test_question = st.text_area("Question:", placeholder="Example: Which product had the highest KPI_%?", height=80)
@@ -761,28 +742,50 @@ if uploaded_file:
                     else:
                         st.dataframe(result, use_container_width=True)
                 
-                # Show validation
                 if validation and not exec_error:
                     st.divider()
-                    st.subheader("✅ Data Validation")
+                    st.subheader("✅ How to Verify in Excel")
                     
                     if query_params.get("query_type") == "best_worst_by_category":
-                        st.write(f"**Top Result:** {validation['top_result']}")
-                        st.write(f"**Total Groups:** {validation['total_groups']} | **Data Rows:** {validation['total_rows']}")
+                        st.write(f"**📊 Result Details:**")
+                        st.write(f"• Category Column: `{validation['category_col']}`")
+                        st.write(f"• Value Column: `{validation['value_col']}`")
+                        st.write(f"• Aggregation: `{validation['agg_func'].upper()}`")
+                        st.write(f"• Total Groups: `{validation['total_groups']}`")
+                        st.write("")
+                        st.write(f"**🏆 Top Result:**")
+                        st.write(f"• {validation['category_col']}: **`{validation['top_category']}`**")
+                        st.write(f"• {validation['agg_func'].upper()} {validation['value_col']}: **`{validation['top_value']}`**")
+                        st.write("")
+                        st.info(validation['instruction'])
                     
                     elif query_params.get("query_type") == "filter_by_time":
-                        st.write(f"**Total:** {validation['total_result']}")
-                        st.write(f"**Rows:** {validation['rows_included']}/{validation['rows_total']}")
+                        st.write(f"**📊 Result Details:**")
+                        st.write(f"• Time Column: `{validation['time_col']}`")
+                        st.write(f"• Filter Value: `{validation['filter_val']}`")
+                        st.write(f"• Value Column: `{validation['value_col']}`")
+                        st.write(f"• Rows Matched: `{validation['rows_included']} / {validation['rows_total']}`")
+                        st.write("")
+                        st.write(f"**💰 Total Result:**")
+                        st.write(f"• **`{validation['total_result']}`**")
                         if validation['breakdown']:
-                            st.write("**Breakdown:**", validation['breakdown'])
+                            st.write(f"• Breakdown: {validation['breakdown']}")
+                        st.write("")
+                        st.info(validation['instruction'])
                     
                     else:  # total
-                        st.write(f"**Total:** {validation['total_result']}")
-                        st.write(f"**Null Values:** {validation['null_values']}")
+                        st.write(f"**📊 Result Details:**")
+                        st.write(f"• Value Column: `{validation['value_col']}`")
+                        st.write(f"• Total Rows: `{validation['total_rows']}`")
+                        st.write(f"• Null Values: `{validation['null_values']}`")
+                        st.write("")
+                        st.write(f"**💰 Grand Total:**")
+                        st.write(f"• **`{validation['total_result']}`**")
                         if validation['breakdown']:
-                            st.bar_chart(pd.Series(validation['breakdown']).rename("Total"))
+                            st.write(f"• Breakdown by period: {validation['breakdown']}")
+                        st.write("")
+                        st.info(validation['instruction'])
         
-        # Cleanup
         import os
         if os.path.exists(temp_path):
             os.remove(temp_path)
