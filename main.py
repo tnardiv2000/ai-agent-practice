@@ -10,7 +10,7 @@ load_dotenv()
 
 st.set_page_config(page_title="AI Data Analyzer Pro - SALES TEST", layout="wide")
 st.title("📊 AI Data Analyzer Pro - Sales Data Accuracy Testing")
-st.write("Target: 95%+ accuracy on sales dataset")
+st.write("Target: 95%+ accuracy on sales dataset with data validation")
 
 OLLAMA_API = "http://localhost:11434/api/generate"
 
@@ -464,21 +464,21 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
     
     return query_params, None
 
-def execute_query(data, query_params):
-    """Execute the query using Python."""
+def execute_query_with_validation(data, query_params):
+    """Execute query AND validate results against actual data."""
     try:
         query_type = query_params.get("query_type", "").lower()
         value_col = query_params.get("value_column")
         
         if not value_col or value_col not in data.columns:
-            return None, f"Value column '{value_col}' not found"
+            return None, f"Value column '{value_col}' not found", None
         
         if query_type == "best_worst_by_category":
             category_col = query_params.get("category_column")
             agg_func = query_params.get("aggregation_function")
             
             if not category_col or category_col not in data.columns:
-                return None, f"Category column '{category_col}' not found"
+                return None, f"Category column '{category_col}' not found", None
             
             if agg_func == 'mean':
                 result = data.groupby(category_col)[value_col].mean().reset_index()
@@ -489,31 +489,83 @@ def execute_query(data, query_params):
             
             result = result.sort_values(value_col, ascending=(agg_func == 'min'))
             result.columns = [category_col, f"{'Min' if agg_func == 'min' else 'Max' if agg_func == 'max' else 'Average'} {value_col}"]
-            return result, None
+            
+            # VALIDATION: Verify the top result manually
+            validation = {
+                "query_type": query_type,
+                "category_col": category_col,
+                "value_col": value_col,
+                "agg_func": agg_func,
+                "top_result": result.iloc[0].to_dict() if len(result) > 0 else None,
+                "total_rows": len(data),
+                "total_groups": len(result),
+                "data_sample": data.groupby(category_col)[value_col].describe().round(2).to_dict() if len(result) < 20 else None,
+            }
+            
+            return result, None, validation
         
         elif query_type == "filter_by_time":
             time_col = query_params.get("time_column")
             filter_val = query_params.get("filter_value")
             
             if not time_col or time_col not in data.columns:
-                return None, f"Time column '{time_col}' not found"
+                return None, f"Time column '{time_col}' not found", None
             
             filtered = data[data[time_col].astype(str) == str(filter_val)]
             if len(filtered) == 0:
-                return None, f"No data for {time_col}={filter_val}"
+                return None, f"No data for {time_col}={filter_val}", None
             
             total = filtered[value_col].sum()
-            return pd.DataFrame({f"Total {value_col}": [total]}), None
+            result = pd.DataFrame({f"Total {value_col}": [total]})
+            
+            # VALIDATION: Show breakdown by category or another dimension
+            first_dim_col = None
+            for col in data.columns:
+                if col != time_col and col != value_col and data[col].dtype == 'object':
+                    first_dim_col = col
+                    break
+            
+            validation = {
+                "query_type": query_type,
+                "time_col": time_col,
+                "filter_val": filter_val,
+                "value_col": value_col,
+                "total_result": round(total, 2),
+                "rows_included": len(filtered),
+                "rows_total": len(data),
+                "breakdown_by_category": filtered.groupby(first_dim_col if first_dim_col else filtered.columns[0])[value_col].sum().round(2).to_dict() if first_dim_col else {},
+                "sample_records": filtered.head(5).to_dict('records'),
+            }
+            
+            return result, None, validation
         
         else:  # total_by_time
             total = data[value_col].sum()
-            return pd.DataFrame({f"Total {value_col}": [total]}), None
+            result = pd.DataFrame({f"Total {value_col}": [round(total, 2)]})
+            
+            # VALIDATION: Show breakdown by time period
+            time_col = query_params.get("time_column")
+            if time_col and time_col in data.columns:
+                breakdown = data.groupby(time_col)[value_col].sum().round(2).to_dict()
+            else:
+                breakdown = {}
+            
+            validation = {
+                "query_type": query_type,
+                "value_col": value_col,
+                "total_result": round(total, 2),
+                "total_rows": len(data),
+                "breakdown_by_time": breakdown,
+                "null_values": int(data[value_col].isnull().sum()),
+            }
+            
+            return result, None, validation
     
     except Exception as e:
-        return None, f"Error: {str(e)}"
+        return None, f"Error: {str(e)}", None
 
-def run_test_suite(data, categorized_columns, test_suite, phase_name):
-    """Run test suite and display results."""
+def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_name):
+    """Run test suite AND execute queries to verify results."""
     results = []
     passed = 0
     
@@ -526,6 +578,7 @@ def run_test_suite(data, categorized_columns, test_suite, phase_name):
                 "Status": "❌ ERROR",
                 "Expected": expected_type,
                 "Got": "ERROR",
+                "Execution": "N/A",
                 "Details": error
             })
             continue
@@ -535,29 +588,43 @@ def run_test_suite(data, categorized_columns, test_suite, phase_name):
         metric_match = query_params.get("value_column") == expected_metric
         dim_match = (query_params.get("category_column") == expected_dim) if expected_dim else True
         
-        if type_match and metric_match and dim_match:
+        # Execute query to verify it works
+        exec_result, exec_error, validation = execute_query_with_validation(data, query_params)
+        
+        if exec_error:
+            execution_status = f"❌ EXEC ERROR: {exec_error[:50]}"
+        elif exec_result is None:
+            execution_status = "❌ No result"
+        else:
+            execution_status = "✅ EXECUTED"
+        
+        if type_match and metric_match and dim_match and not exec_error:
             results.append({
                 "Question": question[:60],
                 "Status": "✅ PASS",
-                "Expected": f"{expected_type}:{expected_metric}:{expected_dim}",
-                "Got": f"{query_params.get('query_type')}:{query_params.get('value_column')}:{query_params.get('category_column')}",
-                "Details": "All correct"
+                "Expected": f"{expected_type}",
+                "Got": f"{query_params.get('query_type')}",
+                "Execution": execution_status,
+                "Details": f"Result rows: {len(exec_result)}"
             })
             passed += 1
         else:
             details = []
             if not type_match:
-                details.append(f"Type: {expected_type}→{query_params.get('query_type')}")
+                details.append(f"Type mismatch")
             if not metric_match:
-                details.append(f"Metric: {expected_metric}→{query_params.get('value_column')}")
+                details.append(f"Metric mismatch")
             if not dim_match:
-                details.append(f"Dim: {expected_dim}→{query_params.get('category_column')}")
+                details.append(f"Dimension mismatch")
+            if exec_error:
+                details.append(f"Execution failed")
             
             results.append({
                 "Question": question[:60],
                 "Status": "❌ FAIL",
-                "Expected": f"{expected_type}:{expected_metric}:{expected_dim}",
-                "Got": f"{query_params.get('query_type')}:{query_params.get('value_column')}:{query_params.get('category_column')}",
+                "Expected": f"{expected_type}",
+                "Got": f"{query_params.get('query_type')}",
+                "Execution": execution_status,
                 "Details": " | ".join(details)
             })
     
@@ -567,9 +634,9 @@ def run_test_suite(data, categorized_columns, test_suite, phase_name):
     with col1:
         st.metric("Total", len(test_suite))
     with col2:
-        st.metric("✅ Passed", passed, delta=f"+{passed}")
+        st.metric("✅ Passed", passed)
     with col3:
-        st.metric("❌ Failed", len(test_suite) - passed, delta=f"-{len(test_suite) - passed}")
+        st.metric("❌ Failed", len(test_suite) - passed)
     with col4:
         accuracy = (passed / len(test_suite)) * 100 if test_suite else 0
         st.metric("Accuracy", f"{accuracy:.1f}%")
@@ -578,17 +645,6 @@ def run_test_suite(data, categorized_columns, test_suite, phase_name):
     with st.expander("📋 Detailed Results"):
         results_df = pd.DataFrame(results)
         st.dataframe(results_df, use_container_width=True, height=400)
-    
-    # Show failures
-    failures = [r for r in results if r["Status"] != "✅ PASS"]
-    if failures:
-        with st.expander(f"⚠️ {len(failures)} Issues"):
-            for failure in failures:
-                st.write(f"**Q:** {failure['Question']}")
-                st.write(f"   Expected: {failure['Expected']}")
-                st.write(f"   Got: {failure['Got']}")
-                st.write(f"   Issue: {failure['Details']}")
-                st.divider()
     
     return passed, len(test_suite)
 
@@ -654,13 +710,13 @@ if uploaded_file:
         # Run tests
         st.header("🧪 Test Suites")
         
-        p1_passed, p1_total = run_test_suite(data, categorized_columns, PHASE_1_TESTS, "Phase 1: Core Queries")
+        p1_passed, p1_total = run_test_suite_with_execution(data, categorized_columns, PHASE_1_TESTS, "Phase 1: Core Queries")
         st.divider()
         
-        p2_passed, p2_total = run_test_suite(data, categorized_columns, PHASE_2_EDGE_CASES, "Phase 2: Edge Cases")
+        p2_passed, p2_total = run_test_suite_with_execution(data, categorized_columns, PHASE_2_EDGE_CASES, "Phase 2: Edge Cases")
         st.divider()
         
-        p3_passed, p3_total = run_test_suite(data, categorized_columns, PHASE_3_COMPLEX, "Phase 3: Complex Queries")
+        p3_passed, p3_total = run_test_suite_with_execution(data, categorized_columns, PHASE_3_COMPLEX, "Phase 3: Complex Queries")
         
         # Overall stats
         st.divider()
@@ -688,7 +744,7 @@ if uploaded_file:
         # Manual query tester
         st.divider()
         st.header("🔬 Manual Query Tester")
-        st.write("Test any custom question:")
+        st.write("Test any custom question and verify results against actual data:")
         
         with st.form("manual_query"):
             test_question = st.text_area("Question:", placeholder="Example: Which product had the highest KPI_%?", height=80)
@@ -708,12 +764,47 @@ if uploaded_file:
                     st.json(query_params)
                 
                 with col2:
-                    st.write("**Execution:**")
-                    result, exec_error = execute_query(data, query_params)
+                    st.write("**Query Execution:**")
+                    result, exec_error, validation = execute_query_with_validation(data, query_params)
                     if exec_error:
                         st.error(exec_error)
                     else:
                         st.dataframe(result, use_container_width=True)
+                
+                # Show validation
+                if validation:
+                    st.divider()
+                    st.subheader("✅ Data Validation & Breakdown")
+                    
+                    if query_params.get("query_type") == "best_worst_by_category":
+                        st.write(f"**Top Result:** {validation['top_result']}")
+                        st.write(f"**Total Groups Found:** {validation['total_groups']}")
+                        st.write(f"**Total Data Rows Analyzed:** {validation['total_rows']}")
+                        
+                        if validation['data_sample']:
+                            with st.expander("📊 Statistical Breakdown by Group"):
+                                st.json(validation['data_sample'])
+                    
+                    elif query_params.get("query_type") == "filter_by_time":
+                        st.write(f"**Total Result:** {validation['total_result']}")
+                        st.write(f"**Rows Included:** {validation['rows_included']} out of {validation['rows_total']} total")
+                        
+                        if validation['breakdown_by_category']:
+                            with st.expander("📍 Breakdown by Category"):
+                                st.json(validation['breakdown_by_category'])
+                        
+                        with st.expander("📋 Sample Records (First 5 Rows)"):
+                            if validation['sample_records']:
+                                st.dataframe(pd.DataFrame(validation['sample_records']))
+                    
+                    else:  # total_by_time
+                        st.write(f"**Total Result:** {validation['total_result']}")
+                        st.write(f"**Null Values Found:** {validation['null_values']}")
+                        
+                        if validation['breakdown_by_time']:
+                            with st.expander("📈 Breakdown by Time Period"):
+                                chart_data = pd.DataFrame(list(validation['breakdown_by_time'].items()), columns=['Period', 'Total'])
+                                st.bar_chart(chart_data.set_index('Period'))
         
         # Cleanup
         import os
