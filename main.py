@@ -71,7 +71,6 @@ def profile_columns(data):
             'synonyms': [col_lower, col],
         }
         
-        # NUMERIC ANALYSIS
         if dtype in ['int64', 'float64']:
             profile['numeric'] = True
             profile['min'] = float(data[col].min()) if not data[col].isnull().all() else None
@@ -96,7 +95,6 @@ def profile_columns(data):
                 profile['inferred_type'] = 'metric'
                 profile['synonyms'].extend(['value', 'amount', 'total', 'sum', 'metric'])
         
-        # STRING/CATEGORY ANALYSIS
         else:
             profile['numeric'] = False
             cardinality = profile['unique_count']
@@ -266,20 +264,23 @@ def find_best_dimension_strict(question, categorized_columns):
     return smart_column_match(question, available_dims)
 
 def find_best_time_column(question, categorized_columns):
-    """Smart time column detection - prioritize Year/Quarter over Date."""
+    """Smart time column detection - SKIP Date, prioritize Year/Quarter."""
     if not categorized_columns['time'] or not question:
         return None
     
     question_lower = question.lower()
     time_cols = list(categorized_columns['time'].keys())
     
-    # PRIORITY 1: Quarter mentions - match Quarter column first
+    # REMOVE Date column from consideration - we only want Year, Quarter, Month
+    time_cols = [col for col in time_cols if 'date' not in col.lower()]
+    
+    if not time_cols:
+        return None
+    
+    # PRIORITY 1: Quarter mentions - match Quarter column
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
         for col in time_cols:
             if 'quarter' in col.lower():
-                return col
-        for col in time_cols:
-            if 'year' in col.lower():
                 return col
     
     # PRIORITY 2: Month mentions
@@ -288,13 +289,13 @@ def find_best_time_column(question, categorized_columns):
             if 'month' in col.lower():
                 return col
     
-    # PRIORITY 3: Year mentions - match Year column first
+    # PRIORITY 3: Year mentions - match Year column
     if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
         for col in time_cols:
             if 'year' in col.lower():
                 return col
     
-    # Default to first available time column
+    # Default to first available (non-Date) time column
     if time_cols:
         return time_cols[0]
     
@@ -307,7 +308,7 @@ def detect_time_period_value(question):
     
     for word in words:
         if word in ['q1', 'q2', 'q3', 'q4']:
-            return word[1]
+            return word[1]  # Return just the number: 1, 2, 3, 4
     
     full_months = {
         'january': 'January', 'february': 'February', 'march': 'March',
@@ -400,23 +401,11 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
     if not smart_metric:
         return None, f"❌ Could not identify metric. Available: {', '.join(categorized_columns['metrics'].keys())}"
     
-    # CRITICAL FIX: Only use filter_value if time column and value make sense together
-    use_filter = False
+    # Normalize time value if we have both time column and value
     if pre_time_value and smart_time:
-        # Check if the time column can actually match this value
-        if 'quarter' in smart_time.lower() and pre_time_value in ['1', '2', '3', '4']:
-            use_filter = True
-        elif 'year' in smart_time.lower() and len(str(pre_time_value)) == 4:
-            use_filter = True
-            pre_time_value = str(pre_time_value)
-        elif 'month' in smart_time.lower() and pre_time_value in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']:
-            use_filter = True
-        elif 'date' in smart_time.lower():
-            # For Date columns, don't try to filter by year/quarter
-            use_filter = False
+        pre_time_value = normalize_filter_value(pre_time_value, smart_time, data)
     
     agg_func = detect_aggregation_function(user_question, smart_metric, smart_dimension)
-    
     question_lower = user_question.lower()
     
     # PRIORITY 1: Group by dimension
@@ -430,8 +419,8 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
             "filter_value": None,
         }
     
-    # PRIORITY 2: Filter by time (ONLY if we have matching column and value)
-    elif use_filter and smart_time and pre_time_value:
+    # PRIORITY 2: Filter by time (if we have time column AND time value detected)
+    elif smart_time and pre_time_value:
         query_params = {
             "query_type": "filter_by_time",
             "time_column": smart_time,
@@ -594,13 +583,13 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
         else:
             issue_list = []
             if not type_match:
-                issue_list.append(f"Type")
+                issue_list.append(f"Type: {expected_type}→{query_params.get('query_type')}")
             if not metric_match:
-                issue_list.append(f"Metric")
+                issue_list.append(f"Metric: {expected_metric}→{query_params.get('value_column')}")
             if not dim_match:
-                issue_list.append(f"Dim")
+                issue_list.append(f"Dim: {expected_dim}→{query_params.get('category_column')}")
             if not execution_ok:
-                issue_list.append(f"Exec")
+                issue_list.append(f"Exec: {exec_error[:30] if exec_error else 'Failed'}")
             
             results.append({
                 "Question": question[:50],
@@ -662,13 +651,14 @@ if uploaded_file:
                     for d in list(categorized_columns['dimensions'].keys()):
                         st.write(f"- {d}")
                 with col3:
-                    st.write("**Time:**")
-                    for t in categorized_columns['time'].keys():
+                    st.write("**Time (excluding Date):**")
+                    time_cols = [t for t in categorized_columns['time'].keys() if 'date' not in t.lower()]
+                    for t in time_cols:
                         st.write(f"- {t}")
                 with col4:
-                    st.write("**Sample Values (Time):**")
-                    if categorized_columns['time']:
-                        first_time_col = list(categorized_columns['time'].keys())[0]
+                    st.write("**Sample Values:**")
+                    if time_cols:
+                        first_time_col = time_cols[0]
                         for val in data[first_time_col].unique()[:5]:
                             st.write(f"- {val}")
         
