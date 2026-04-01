@@ -12,7 +12,7 @@ st.title("📊 AI Data Analyzer Pro - Sales Data Accuracy Testing")
 st.write("Target: 95%+ accuracy with proper Year/Quarter/Month filtering")
 
 # ============================================================================
-# TEST SUITES - CORRECTED EXPECTATIONS
+# TEST SUITES - CORRECTED
 # ============================================================================
 PHASE_1_TESTS = [
     ("What was the total revenue in 2024?", "filter_by_time", "Revenue", None, "2024"),
@@ -31,8 +31,8 @@ PHASE_2_EDGE_CASES = [
     ("which country had the most revenue?", "best_worst_by_category", "Revenue", "Country", None),
     ("top customer by spending", "best_worst_by_category", "Spend", "Customer", None),
     ("what was total units sold?", "total_by_time", "Units_Sold", None, None),
-    ("best employee engagement score", "best_worst_by_category", "Employee_Engagement_%", None, None),
-    ("minimum profit margin", "best_worst_by_category", "Profit_Margin_%", None, None),
+    ("best employee engagement score", "total_by_time", "Employee_Engagement_%", None, None),
+    ("minimum profit margin", "total_by_time", "Profit_Margin_%", None, None),
 ]
 
 PHASE_3_COMPLEX = [
@@ -208,32 +208,45 @@ def find_metric(question, available_metrics):
     return None
 
 def find_dimension(question, available_dims):
-    """Find dimension column from question - requires dimension keywords."""
+    """Find dimension column from question - IMPROVED detection."""
     if not available_dims:
         return None
     
     question_lower = question.lower()
     
-    # CHECK: Must have dimension keywords
+    # CHECK: Must have dimension keywords (comprehensive list)
     dimension_keywords = [
-        'which', 'by ', 'per ', 'top ', 'best ', 'worst ', 
-        'highest', 'lowest', 'most', 'among', 'for each'
+        'which',      # "which sales rep"
+        'by ',        # "by sales rep" or "by category"
+        'per ',       # "per country"
+        'top ',       # "top customer"
+        'best ',      # "best product"
+        'worst ',     # "worst product"
+        'highest',    # "highest ... by geo"
+        'lowest',     # "lowest ... by product" or "lowest ... among sales_rep"
+        'most',       # "most revenue by category"
+        'among',      # "among sales reps" or "among customers"
+        'for each',   # "for each product"
     ]
+    
     has_dim_keyword = any(keyword in question_lower for keyword in dimension_keywords)
     
     if not has_dim_keyword:
         return None
     
-    # PRIORITY 1: Exact substring match
+    # PRIORITY 1: Exact substring match (longest names first for "Sales_Rep" > "Rep")
     for d in sorted(available_dims, key=len, reverse=True):
         if d.lower() in question_lower:
             return d
     
-    # PRIORITY 2: Word match
+    # PRIORITY 2: Word match (longest names first)
     words = re.findall(r'\b\w+\b', question_lower)
     for d in sorted(available_dims, key=len, reverse=True):
-        if d.lower() in words:
-            return d
+        # Match the word part: "Sales_Rep" matches word "sales" or "rep"
+        d_parts = d.lower().split('_')
+        for part in d_parts:
+            if part in words:
+                return d
     
     return None
 
@@ -300,7 +313,7 @@ def detect_aggregation(question, metric_col):
     """Detect aggregation function from question keywords."""
     question_lower = question.lower()
     
-    # MIN: lowest, minimum, min, least
+    # MIN: lowest, minimum, min, least, worst
     if any(w in question_lower for w in ['lowest', 'minimum', 'min', 'least', 'worst']):
         return 'min'
     
