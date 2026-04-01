@@ -264,48 +264,39 @@ def find_best_dimension_strict(question, categorized_columns):
     return smart_column_match(question, available_dims)
 
 def find_best_time_column(question, categorized_columns):
-    """Smart time column detection - SKIP Date, prioritize Year/Quarter."""
+    """Smart time column detection - match exact column names."""
     if not categorized_columns['time'] or not question:
         return None
     
     question_lower = question.lower()
     all_time_cols = list(categorized_columns['time'].keys())
     
-    # First, try to find Year/Quarter/Month (non-Date columns)
-    time_cols = [col for col in all_time_cols if 'date' not in col.lower()]
-    
-    # If no Year/Quarter/Month, fall back to all time columns (including Date)
-    if not time_cols:
-        time_cols = all_time_cols
-    
-    # PRIORITY 1: Quarter mentions - match Quarter column
+    # PRIORITY 1: Quarter mentions - match "Quarter" column exactly
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
-        for col in time_cols:
-            if 'quarter' in col.lower():
+        for col in all_time_cols:
+            if col == 'Quarter':  # Exact match
                 return col
-        # If Quarter not found, don't proceed with other columns for this question
-        return None
     
-    # PRIORITY 2: Month mentions
+    # PRIORITY 2: Month mentions - match "Month" column exactly
     if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
-        for col in time_cols:
-            if 'month' in col.lower():
+        for col in all_time_cols:
+            if col == 'Month':  # Exact match
                 return col
     
-    # PRIORITY 3: Year mentions - match Year column
+    # PRIORITY 3: Year mentions - match "Year" column exactly
     if re.search(r'\b(19|20)\d{2}\b|year\b', question_lower):
-        for col in time_cols:
-            if 'year' in col.lower():
+        for col in all_time_cols:
+            if col == 'Year':  # Exact match
                 return col
     
-    # If none of the above matched, return first non-Date column
-    non_date_cols = [col for col in all_time_cols if 'date' not in col.lower()]
-    if non_date_cols:
-        return non_date_cols[0]
+    # Default: return first non-Date column
+    for col in all_time_cols:
+        if col != 'Date':
+            return col
     
-    # Last resort: return first time column (could be Date)
-    if time_cols:
-        return time_cols[0]
+    # Last resort: return Date if that's all we have
+    if all_time_cols:
+        return all_time_cols[0]
     
     return None
 
