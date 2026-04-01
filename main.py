@@ -79,23 +79,19 @@ def profile_columns(data):
             profile['mean'] = float(data[col].mean()) if not data[col].isnull().all() else None
             profile['std'] = float(data[col].std()) if not data[col].isnull().all() else None
             
-            # Is it a percentage?
             if profile['max'] and profile['min'] is not None:
                 if profile['max'] <= 100 and profile['min'] >= 0 and '%' in col_lower:
                     profile['inferred_type'] = 'metric_percentage'
                     profile['synonyms'].extend(['percentage', 'percent', 'pct', '%'])
             
-            # Is it a count/quantity?
             if any(word in col_lower for word in ['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number']):
                 profile['inferred_type'] = 'metric_count'
                 profile['synonyms'].extend(['count', 'quantity', 'qty', 'units', 'items', 'volume', 'total', 'number'])
             
-            # Is it a financial metric?
             elif any(word in col_lower for word in ['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'price', 'amount', 'value', 'fees', 'budget', 'points', 'score', 'goals']):
                 profile['inferred_type'] = 'metric_financial'
                 profile['synonyms'].extend(['spend', 'cost', 'revenue', 'sales', 'profit', 'income', 'amount', 'value', 'fees', 'budget', 'points', 'score', 'goals'])
             
-            # Default: assume it's a metric
             else:
                 profile['inferred_type'] = 'metric'
                 profile['synonyms'].extend(['value', 'amount', 'total', 'sum', 'metric'])
@@ -107,7 +103,6 @@ def profile_columns(data):
             total_rows = len(data)
             cardinality_ratio = cardinality / total_rows if total_rows > 0 else 0
             
-            # Check column name FIRST
             is_likely_dimension = any(word in col_lower for word in [
                 'team', 'player', 'product', 'customer', 'country', 'region', 'sport', 'league',
                 'category', 'type', 'group', 'name', 'sales_rep', 'rep', 'agent', 'user',
@@ -149,7 +144,6 @@ def profile_columns(data):
                 if any(word in col_lower for word in ['category', 'type', 'class', 'segment', 'department']):
                     profile['synonyms'].extend(['category', 'type', 'class', 'segment', 'department'])
             
-            # Time columns
             if any(word in col_lower for word in ['date', 'time', 'year', 'month', 'quarter', 'week', 'day', 'timestamp']):
                 profile['inferred_type'] = 'time'
                 profile['synonyms'].extend(['date', 'time', 'year', 'month', 'quarter', 'week', 'day', 'timestamp'])
@@ -198,19 +192,16 @@ def smart_column_match(question, available_columns):
     question_lower = question.lower()
     question_words = re.findall(r'\b\w+\b', question_lower)
     
-    # PHASE 1: Exact full column name match
     for col in available_columns:
         col_lower = col.lower()
         if col_lower in question_lower:
             return col
     
-    # PHASE 2: Partial match with underscores/spaces
     for col in available_columns:
         col_clean = col.lower().replace('_', ' ')
         if col_clean in question_lower:
             return col
     
-    # PHASE 3: Match longer column names FIRST
     sorted_cols = sorted(available_columns, key=lambda x: len(x), reverse=True)
     for col in sorted_cols:
         col_lower = col.lower()
@@ -409,13 +400,26 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
     if not smart_metric:
         return None, f"❌ Could not identify metric. Available: {', '.join(categorized_columns['metrics'].keys())}"
     
+    # CRITICAL FIX: Only use filter_value if time column and value make sense together
+    use_filter = False
     if pre_time_value and smart_time:
-        pre_time_value = normalize_filter_value(pre_time_value, smart_time, data)
+        # Check if the time column can actually match this value
+        if 'quarter' in smart_time.lower() and pre_time_value in ['1', '2', '3', '4']:
+            use_filter = True
+        elif 'year' in smart_time.lower() and len(str(pre_time_value)) == 4:
+            use_filter = True
+            pre_time_value = str(pre_time_value)
+        elif 'month' in smart_time.lower() and pre_time_value in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']:
+            use_filter = True
+        elif 'date' in smart_time.lower():
+            # For Date columns, don't try to filter by year/quarter
+            use_filter = False
     
     agg_func = detect_aggregation_function(user_question, smart_metric, smart_dimension)
     
     question_lower = user_question.lower()
     
+    # PRIORITY 1: Group by dimension
     if smart_dimension and (any(word in question_lower for word in ['which', 'highest', 'lowest', 'best', 'worst', 'top', 'most', 'by ', 'per ']) or ' by ' in question_lower):
         query_params = {
             "query_type": "best_worst_by_category",
@@ -426,7 +430,8 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
             "filter_value": None,
         }
     
-    elif pre_time_value and smart_time:
+    # PRIORITY 2: Filter by time (ONLY if we have matching column and value)
+    elif use_filter and smart_time and pre_time_value:
         query_params = {
             "query_type": "filter_by_time",
             "time_column": smart_time,
@@ -436,6 +441,7 @@ def ai_understand_query(user_question, data, timeout_seconds, temperature, categ
             "aggregation_function": None,
         }
     
+    # PRIORITY 3: Total by time
     else:
         query_params = {
             "query_type": "total_by_time",
