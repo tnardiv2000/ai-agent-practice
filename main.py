@@ -269,19 +269,22 @@ def find_best_time_column(question, categorized_columns):
         return None
     
     question_lower = question.lower()
-    time_cols = list(categorized_columns['time'].keys())
+    all_time_cols = list(categorized_columns['time'].keys())
     
-    # REMOVE Date column from consideration - we only want Year, Quarter, Month
-    time_cols = [col for col in time_cols if 'date' not in col.lower()]
+    # First, try to find Year/Quarter/Month (non-Date columns)
+    time_cols = [col for col in all_time_cols if 'date' not in col.lower()]
     
+    # If no Year/Quarter/Month, fall back to all time columns (including Date)
     if not time_cols:
-        return None
+        time_cols = all_time_cols
     
     # PRIORITY 1: Quarter mentions - match Quarter column
     if re.search(r'\b(q[1-4]|quarter)\b', question_lower):
         for col in time_cols:
             if 'quarter' in col.lower():
                 return col
+        # If Quarter not found, don't proceed with other columns for this question
+        return None
     
     # PRIORITY 2: Month mentions
     if re.search(r'\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|month)\b', question_lower):
@@ -295,7 +298,12 @@ def find_best_time_column(question, categorized_columns):
             if 'year' in col.lower():
                 return col
     
-    # Default to first available (non-Date) time column
+    # If none of the above matched, return first non-Date column
+    non_date_cols = [col for col in all_time_cols if 'date' not in col.lower()]
+    if non_date_cols:
+        return non_date_cols[0]
+    
+    # Last resort: return first time column (could be Date)
     if time_cols:
         return time_cols[0]
     
@@ -583,13 +591,13 @@ def run_test_suite_with_execution(data, categorized_columns, test_suite, phase_n
         else:
             issue_list = []
             if not type_match:
-                issue_list.append(f"Type: {expected_type}→{query_params.get('query_type')}")
+                issue_list.append(f"Type")
             if not metric_match:
-                issue_list.append(f"Metric: {expected_metric}→{query_params.get('value_column')}")
+                issue_list.append(f"Metric")
             if not dim_match:
-                issue_list.append(f"Dim: {expected_dim}→{query_params.get('category_column')}")
+                issue_list.append(f"Dim")
             if not execution_ok:
-                issue_list.append(f"Exec: {exec_error[:30] if exec_error else 'Failed'}")
+                issue_list.append(f"Exec")
             
             results.append({
                 "Question": question[:50],
@@ -644,22 +652,21 @@ if uploaded_file:
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.write("**Metrics:**")
-                    for m in list(categorized_columns['metrics'].keys()):
+                    for m in list(categorized_columns['metrics'].keys())[:10]:
                         st.write(f"- {m}")
                 with col2:
                     st.write("**Dimensions:**")
-                    for d in list(categorized_columns['dimensions'].keys()):
+                    for d in list(categorized_columns['dimensions'].keys())[:10]:
                         st.write(f"- {d}")
                 with col3:
-                    st.write("**Time (excluding Date):**")
-                    time_cols = [t for t in categorized_columns['time'].keys() if 'date' not in t.lower()]
-                    for t in time_cols:
+                    st.write("**Time Columns:**")
+                    for t in categorized_columns['time'].keys():
                         st.write(f"- {t}")
                 with col4:
-                    st.write("**Sample Values:**")
-                    if time_cols:
-                        first_time_col = time_cols[0]
-                        for val in data[first_time_col].unique()[:5]:
+                    st.write("**Sample Time Values:**")
+                    if categorized_columns['time']:
+                        first_time_col = list(categorized_columns['time'].keys())[0]
+                        for val in data[first_time_col].unique()[:8]:
                             st.write(f"- {val}")
         
         st.divider()
@@ -711,7 +718,7 @@ if uploaded_file:
         
         st.divider()
         st.header("🔬 Manual Query Tester")
-        st.write("Test any custom question and verify against Excel:")
+        st.write("Test any custom question:")
         
         with st.form("manual_query"):
             test_question = st.text_area("Question:", placeholder="Example: Which product had the highest KPI_%?", height=80)
